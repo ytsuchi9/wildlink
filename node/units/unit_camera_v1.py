@@ -4,6 +4,9 @@ import paho.mqtt.client as mqtt
 import json
 import sys
 import os
+# units/ フォルダから見て、親フォルダ(node/)にある wmp_core を見に行けるようにする
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from wmp_core import WMPHeader
 import threading
 from wmp_core import WMPHeader
 
