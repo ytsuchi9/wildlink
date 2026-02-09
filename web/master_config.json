@@ -1,0 +1,16 @@
+{
+    "system": {
+        "broker_ip": "192.168.0.102"
+    },
+    "nodes": {
+        "node_001": {
+            "name": "玄関カメラ (WildLink v1)",
+            "ip": "192.168.0.xxx", 
+            "devices": {
+                "act_stream": { "type": "CAMERA", "hw_driver": "/dev/video0" },
+                "env_temp": { "type": "DHT22", "hw_pin": 18 },
+                "sys_sw": { "type": "SWITCH", "hw_pin": 17 }
+            }
+        }
+    }
+}

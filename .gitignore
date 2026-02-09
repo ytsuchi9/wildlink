@@ -1,0 +1,21 @@
+# 機密情報
+secret.json
+config.json
+*.log
+logs/
+
+# Pythonの一時ファイル
+__pycache__/
+*.pyc
+
+# 画像関係
+camimages/
+*.jpg
+*.jpeg
+*.avi
+*.mp4
+*.mpeg
+*.mpg
+
+# その他
+OldFile/

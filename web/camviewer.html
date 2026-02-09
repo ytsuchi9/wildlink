@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>マルチカメラ監視パネル v6.5</title>
+    <style>
+        :root { --bg: #121212; --card: #1e1e1e; --text: #e0e0e0; --accent: #27ae60; --error: #ff4757; }
+        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; }
+        h1 { text-align: center; color: white; margin-bottom: 30px; font-weight: 300; letter-spacing: 2px; }
+        
+        .camera-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 25px; max-width: 1600px; margin: 0 auto; }
+        
+        /* カードのデザイン */
+        .camera-card { background: var(--card); border-radius: 12px; padding: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid #333; transition: 0.3s; }
+        .camera-card:hover { border-color: var(--accent); }
+        .camera-name { font-size: 1.2rem; font-weight: bold; margin-bottom: 12px; border-left: 5px solid var(--accent); padding-left: 12px; color: #fff; }
+        
+        /* 映像エリア */
+        .video-wrapper { width: 100%; aspect-ratio: 4/3; background: #000; border-radius: 8px; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 1px solid #444; }
+        .no-signal { color: #444; font-weight: bold; font-family: 'Courier New', Courier, monospace; letter-spacing: 2px; z-index: 1; }
+        .img-stream { width: 100%; height: 100%; object-fit: contain; display: none; z-index: 2; position: absolute; top: 0; left: 0; }
+        
+        /* バイタル & センサー情報 */
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 15px 0; font-size: 0.9rem; font-family: 'Consolas', 'Monaco', monospace; }
+        .info-item { background: #252525; padding: 10px; border-radius: 4px; color: #00ff00; border: 1px solid #333; text-shadow: 0 0 5px rgba(0,255,0,0.3); }
+        .info-full { grid-column: span 2; color: #888; font-size: 0.75rem; text-align: right; padding-top: 5px; }
+
+        /* ボタン・ステータス */
+        .btn { width: 100%; background: var(--accent); color: white; border: none; padding: 14px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 1rem; transition: 0.3s; box-shadow: 0 4px 0 #1e8449; }
+        .btn:hover { background: #2ecc71; transform: translateY(-1px); }
+        .btn:active { transform: translateY(2px); box-shadow: none; }
+        .btn:disabled { background: #444; cursor: not-allowed; box-shadow: none; transform: none; }
+        .status-msg { margin-top: 12px; font-size: 0.8rem; height: 1.2rem; color: #aaa; text-align: center; font-style: italic; }
+    </style>
+</head>
+<body>
+
+<h1>📡 Multi-Node Monitoring Panel</h1>
+<div class="camera-grid" id="gridContainer"></div>
+
+<script>
+    const gridContainer = document.getElementById('gridContainer');
+
+    // 1. master_config.json を読み込んでカードを動的生成
+    fetch('master_config.json')
+    .then(res => res.json())
+    .then(config => {
+        const nodes = config.nodes;
+        Object.keys(nodes).forEach(id => {
+            createCameraCard(id, nodes[id].name);
+        });
+    })
+    .catch(err => {
+        console.error("Config load error:", err);
+        gridContainer.innerHTML = `<p style="color:var(--error); text-align:center;">設定ファイルの読み込みに失敗しました。</p>`;
+    });
+
+    function createCameraCard(id, name) {
+        const card = document.createElement('div');
+        card.className = 'camera-card';
+        card.innerHTML = `
+            <div class="camera-name">${name} <small style="color:#666; font-weight:normal;">[${id}]</small></div>
+            <div class="video-wrapper">
+                <div id="nosig-${id}" class="no-signal">NO SIGNAL</div>
+                <img id="img-${id}" class="img-stream" alt="camera stream">
+            </div>
+            
+            <div class="info-grid">
+                <div class="info-item" id="temp-${id}">Temp: --.-°C</div>
+                <div class="info-item" id="pir-${id}">PIR: WAIT</div>
+                <div class="info-item" id="hum-${id}">Hum: --%</div>
+                <div class="info-item" id="pres-${id}">Pres: ----hPa</div>
+                <div class="info-full" id="time-${id}">Last Update: ----/--/-- --:--:--</div>
+            </div>
+
+            <button id="btn-${id}" class="btn" onclick="startLive('${id}')">VIEW LIVE STREAM</button>
+            <div id="stat-${id}" class="status-msg"></div>
+        `;
+        gridContainer.appendChild(card);
+        
+        // 初回実行と定期更新（5秒おき）
+        updateVitals(id);
+        setInterval(() => updateVitals(id), 5000);
+    }
+
+    // 2. センサーデータの更新（0.0 などの数値を正しく扱うための判定）
+    function updateVitals(id) {
+        fetch(`get_vitals.php?cam_id=${id}`)
+        .then(r => r.json())
+        .then(data => {
+            // 温度表示
+            const tempVal = (data.temp !== undefined && data.temp !== null) ? data.temp : '--.-';
+            document.getElementById(`temp-${id}`).innerText = `Temp: ${tempVal}°C`;
+            
+            // 湿度表示 (0.0% の場合でも表示されるように判定)
+            const humVal = (data.humidity !== undefined && data.humidity !== null) ? data.humidity : '--';
+            document.getElementById(`hum-${id}`).innerText = `Hum: ${humVal}%`;
+            
+            // 人感センサー状態
+            document.getElementById(`pir-${id}`).innerText  = `PIR: ${data.motion_state || 'inactive'}`;
+            
+            // 更新時刻
+            document.getElementById(`time-${id}`).innerText = `Last Update: ${data.updated_at || '----/--/-- --:--:--'}`;
+            
+            // オンライン状態による文字色の変化
+            const nosig = document.getElementById(`nosig-${id}`);
+            if (data.is_online) {
+                nosig.style.color = "var(--accent)";
+                nosig.innerText = "READY";
+            } else {
+                nosig.style.color = "#444";
+                nosig.innerText = "OFFLINE";
+            }
+        })
+        .catch(e => console.warn(`Vital update failed for ${id}:`, e));
+    }
+
+    // 3. ライブ配信の開始（Apacheのプロキシ経由でアクセス）
+    function startLive(id) {
+        const btn = document.getElementById(`btn-${id}`);
+        const stat = document.getElementById(`stat-${id}`);
+        const img = document.getElementById(`img-${id}`);
+        const nosig = document.getElementById(`nosig-${id}`);
+
+        btn.disabled = true;
+        stat.innerText = "⚡ 命令送信中...";
+
+        const fd = new FormData();
+        fd.append('cam_id', id);
+        fd.append('command', 'start_motion'); 
+
+        fetch('send_cmd.php', { method: 'POST', body: fd })
+        .then(r => r.text())
+        .then(() => {
+            stat.innerText = "⏳ カメラ起動中 (3秒待ち)...";
+            
+            // MJPG-Streamer が画像を生成するまで少し待機
+            // camviewer.html の startLive 内の修正イメージ
+            setTimeout(() => {
+                // 1枚表示
+                img.style.display = 'block';
+                nosig.style.display = 'none';
+                stat.innerText = "🟢 WildLink WMP受信中...";
+            
+                // パラパラ漫画開始
+                const refreshInterval = setInterval(() => {
+                    // キャッシュを回避するためにタイムスタンプを付与
+                    img.src = "latest.jpg?t=" + new Date().getTime();
+                }, 100); // 0.1秒おきに最新の latest.jpg を取得
+
+                // 30秒後に停止
+                setTimeout(() => {
+                    clearInterval(refreshInterval); // ループ停止
+                    img.style.display = 'none';
+                    nosig.style.display = 'flex';
+                    stat.innerText = "⏹ 配信を終了しました";
+                    btn.disabled = false;
+        
+                    // 送信側にも停止命令を飛ばす
+                    sendStopCommand(id); 
+                }, 30000);
+            }, 1000); // 起動待ち時間は1秒くらいで十分かもしれません
+        })
+        .catch(err => {
+            stat.innerText = "❌ 送信エラー";
+            btn.disabled = false;
+            console.error(err);
+        });
+    }
+</script>
+</body>
+</html>

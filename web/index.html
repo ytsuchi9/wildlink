@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    <h1>TEST</h1>
+    <img src="http://192.168.111.100:8080/?action=stream" />
+    <img src="/cam1/?action=stream" />
+    <h2>Static</h2>
+    <img src="/cam1/?action=snapshot" />
+    
+    <h1>バックエンドサーバーのスクリプト実行</h1>
+    <form method="POST" action="start_cam1.php">
+        <button type="submit" name="run_script">スクリプトを実行</button>
+    </form>
+    
+    <h1>シェルスクリプト実行２</h1>
+    <form action="start_cam1.php" method="post">
+        <input type="submit" name="run_script" value="スクリプトを実行">
+    </form>
+
+
+    <h1>バックエンドサーバーのスクリプト実行</h1>
+    <button id="runButton">スクリプトを実行</button>
+    <p>ステータス: <span id="status">待機中</span></p>
+    <script>
+        document.getElementById('runButton').addEventListener('click', function() {
+            document.getElementById('status').textContent = '実行中...';
+            // FormDataを使用してPOSTリクエストを準備
+            const formData = new FormData();
+            formData.append('run_script', 'true');
+
+            fetch('start_cam1.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                // PHPからのレスポンスを表示
+                document.getElementById('status').textContent = '結果: ' + data.message;
+                console.log(data);
+            })
+            .catch(error => {
+                document.getElementById('status').textContent = 'エラーが発生しました。';
+                console.error('Error:', error);
+            });
+        });
+    </script>
+</body>
+</html>
