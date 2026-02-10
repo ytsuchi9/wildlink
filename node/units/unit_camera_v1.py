@@ -4,6 +4,27 @@ import paho.mqtt.client as mqtt
 import json
 import sys
 import os
+
+# 自分の場所から親、その隣の common を探す
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 構造: node/units/unit_camera_v1.py -> 2つ上が project_root
+project_root = os.path.abspath(os.path.join(current_dir, "../../"))
+common_path = os.path.join(project_root, "common")
+
+if common_path not in sys.path:
+    sys.path.append(common_path)
+
+# もし上記で見つからない場合のためのバックアップパス
+alt_common = "/home/ytsuchi/github/wildlink_project/common"
+if not os.path.exists(os.path.join(common_path, "wmp_core.py")):
+    if os.path.exists(alt_common) and alt_common not in sys.path:
+        sys.path.append(alt_common)
+
+try:
+    from wmp_core import WMPHeader
+except ImportError as e:
+    print(f"CRITICAL: wmp_core.py not found! {e}")
+
 # units/ フォルダから見て、親フォルダ(node/)にある wmp_core を見に行けるようにする
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from wmp_core import WMPHeader
