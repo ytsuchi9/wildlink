@@ -1,22 +1,25 @@
 from ina219 import INA219
 from ina219 import DeviceRangeError
 
-def get_data(configs):
-    SHUNT_OHMS = 0.1 # 標準的なモジュールは通常0.1Ω
-    ina = INA219(SHUNT_OHMS, address=0x40)
-    ina.configure()
+class WildLinkUnit:
+    def __init__(self, config):
+        self.val_name = config.get("val_name", "power_monitor")
+        # addr引数ではなく、内部のアドレス（通常0x40）で初期化
+        self.ina = INA219(shunt_ohms=0.1)
+        self.ina.configure()
+        self.log_msg = "Idle"
 
-    try:
-        volt = ina.voltage()      # バス電圧(V)
-        amp = ina.current()       # 電流(mA)
-        power = ina.power()       # 電力(mW)
-        
-        return True, {
-            "sys_volt": round(volt, 2),
-            "sys_amp": round(amp, 2),
-            "sys_watt": round(power / 1000.0, 3) # Wに変換
-        }
-    except DeviceRangeError as e:
-        return False, {"log_code": 205, "log_msg": "INA219 Range Error"}
-    except Exception as e:
-        return False, {"log_code": 205, "log_msg": str(e)}
+    def update(self):
+        try:
+            v = self.ina.voltage()
+            i = self.ina.current()
+            p = (v * i) / 1000.0 # 電力計算
+            return {
+                "sys_volt": round(v, 2),
+                "sys_curr": round(i, 2),
+                "sys_watt": round(p, 3)
+            }
+        except DeviceRangeError:
+            return {"log_msg": "Power Range Error"}
+        except:
+            return {}

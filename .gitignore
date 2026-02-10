@@ -1,4 +1,5 @@
 # 機密情報
+.env
 secret.json
 config.json
 *.log
