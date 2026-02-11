@@ -1,7 +1,27 @@
 import subprocess
 import socket
 import time
+import sys
+import os
+
+
+# 1. 自分の場所を取得 (wildlink_project/hub)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 2. 親の場所を取得 (node)
+node_dir = os.path.dirname(current_dir)
+# 3. さらにその親を取得 (wildlink)
+wildlink_root = os.path.dirname(node_dir)
+# 4. common フォルダのパスを作成 (/opt/wildlink/common)
+common_path = os.path.join(wildlink_root, "common")
+
+# パスに追加
+sys.path.append(common_path)
+
+# これで common/wmp_core.py が見つかります
+import socket
 from wmp_core import WMPHeader
+
+print("Success: wmp_core found from common folder!")
 
 def start_stream_tx(dest_ip, port=5005):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

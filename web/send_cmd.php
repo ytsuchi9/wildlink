@@ -1,54 +1,66 @@
 <?php
 // send_cmd.php
-ini_set('display_errors', 1);
-error_reporting(E_ALL);
+// WildLink Project: MQTT Command Dispatcher & Logger
+
 require_once 'db_config.php';
 
-$cam_id  = $_POST['cam_id']  ?? '';
+// 1. パラメータ取得 (動的UI化への布石として ID を受け取れるようにする)
+// cam_id が指定されない場合はデフォルトで node_001 を使用
+$sys_id  = $_POST['cam_id']  ?? 'node_001';
 $command = $_POST['command'] ?? '';
-$payload = $_POST['payload'] ?? '';
 
-if (!$cam_id || !$command) {
-    echo "Error: Missing parameters";
-    exit;
+if (empty($command)) {
+    die("Error: No command specified.");
 }
 
-// 1. MQTT送信先トピックの修正 (規約: wildlink/{node_id}/cmd)
-$topic = "wildlink/" . $cam_id . "/cmd";
-
-// 2. メッセージ内容の修正 (main_manager.py が判定している文字列へ)
+// 2. コマンドの正規化 (規約 act_ に合わせた内部コマンド名)
+// ブラウザからの 'start_motion' 等を 'cam_start' に変換
 if ($command === 'start_motion' || $command === 'start') {
     $mqtt_msg = "cam_start";
 } elseif ($command === 'stop_motion' || $command === 'stop') {
     $mqtt_msg = "cam_stop";
 } else {
-    // その他の汎用コマンド
-    $mqtt_msg = $command; 
+    $mqtt_msg = $command; // その他のコマンドはそのまま
 }
 
-// --- 1. MQTT送信 (ここはOK) ---
-$topic = "wildlink/" . $cam_id . "/cmd";
-$mqtt_msg = ($command === 'start_motion' || $command === 'start') ? "cam_start" : "cam_stop";
-exec("mosquitto_pub -t " . escapeshellarg($topic) . " -m " . escapeshellarg($mqtt_msg));
+// 3. MQTTパブリッシュ (シェル経由で mosquitto_pub を実行)
+$topic = "wildlink/" . $sys_id . "/cmd";
+$escaped_topic = escapeshellarg($topic);
+$escaped_msg   = escapeshellarg($mqtt_msg);
 
-// --- 2. DB記録 (ここを修正) ---
-// カラムを sys_id, act_type, status の3つに絞った場合
+// 送信実行
+exec("mosquitto_pub -t $escaped_topic -m $escaped_msg 2>&1", $output, $return_var);
+
+if ($return_var !== 0) {
+    $mqtt_status = "MQTT Error: " . implode("\n", $output);
+} else {
+    $mqtt_status = "MQTT Success: Published '$mqtt_msg' to $topic";
+}
+
+// 4. データベースへの記録 (規約: sys_id, act_type)
+$db_log_status = "";
 $sql = "INSERT INTO command_logs (sys_id, act_type, status) VALUES (?, ?, 'sent')";
 $stmt = $mysqli->prepare($sql);
 
 if ($stmt) {
-    // 引数は2つ: 1つ目の?に $cam_id, 2つ目の?に $mqtt_msg
-    // 'ss' は String, String の意味です
-    $stmt->bind_param("ss", $cam_id, $mqtt_msg);
-    
+    $stmt->bind_param("ss", $sys_id, $mqtt_msg);
     if ($stmt->execute()) {
-        echo "Success: Published '$mqtt_msg' to $topic";
+        $db_log_status = "DB Success: Command logged.";
     } else {
-        echo "Execute Error: " . $stmt->error;
+        $db_log_status = "DB Error: " . $stmt->error;
     }
     $stmt->close();
 } else {
-    echo "SQL Prepare Error: " . $mysqli->error;
+    $db_log_status = "DB Prepare Error: " . $mysqli->error;
 }
 
 $mysqli->close();
+
+// 5. 結果をブラウザに返す
+echo "<h3>WildLink Command Status</h3>";
+echo "<ul>";
+echo "<li><strong>Target ID:</strong> $sys_id</li>";
+echo "<li><strong>Result:</strong> $mqtt_status</li>";
+echo "<li><strong>Log:</strong> $db_log_status</li>";
+echo "</ul>";
+?>

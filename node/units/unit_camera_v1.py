@@ -1,44 +1,53 @@
 import subprocess
 import os
+import sys
 
 class WildLinkUnit:
     def __init__(self, config):
+        # 規約に基づき config から取得
         self.val_name = config.get("val_name", "camera")
         self.hw_pin = config.get("hw_pin", "/dev/video0")
         self.val_res = config.get("val_res", "640x480")
         self.val_fps = config.get("val_fps", 10)
-        self.act_strobe = config.get("act_strobe", False)
+        
+        # 規約変更: act_strobe -> act_stream
+        self.act_stream = config.get("act_stream", False)
         
         self.log_msg = "Idle"
         self.process = None
-        self.out_file = "/dev/shm/latest.jpg" # 高速化のため共有メモリを使用
 
-    def start_ffmpeg(self):
+    def start_wmp_tx(self):
+        """WMP送信スクリプトをサブプロセスで起動"""
         if self.process: return
         
-        # FFmpegコマンド (MJPEGストリームから静止画を連続上書き)
-        cmd = (
-            f"ffmpeg -y -i {self.hw_pin} -f image2 -vf fps={self.val_fps} "
-            f"-s {self.val_res} -update 1 {self.out_file} > /dev/null 2>&1"
-        )
-        self.process = subprocess.Popen(cmd, shell=True)
-        self.log_msg = "Running"
+        # 実行スクリプトと同じディレクトリにある wmp_stream_tx.py を指定
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        tx_script = os.path.join(script_dir, "wmp_stream_tx.py")
+        
+        # 実行 (shell=False の方が制御しやすいためリスト形式で渡す)
+        self.process = subprocess.Popen(["python3", tx_script])
+        self.log_msg = "WMP Streaming"
+        print(f"[{self.val_name}] WMP TX Process Started.")
 
-    def stop_ffmpeg(self):
+    def stop_wmp_tx(self):
+        """プロセスを終了"""
         if self.process:
             self.process.terminate()
+            try:
+                self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
             self.process = None
-            # 前の画像を消去
-            if os.path.exists(self.out_file):
-                os.remove(self.out_file)
         self.log_msg = "Idle"
+        print(f"[{self.val_name}] WMP TX Process Stopped.")
 
     def update(self):
-        if self.act_strobe:
+        # act_stream の状態でプロセスを管理
+        if self.act_stream:
             if not self.process:
-                self.start_ffmpeg()
-            return {"cam_status": "streaming"}
+                self.start_wmp_tx()
+            return {"val_status": "streaming", "log_msg": self.log_msg}
         else:
             if self.process:
-                self.stop_ffmpeg()
-            return {"cam_status": "stopped"}
+                self.stop_wmp_tx()
+            return {"val_status": "idle", "log_msg": self.log_msg}
