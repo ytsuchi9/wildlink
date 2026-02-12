@@ -112,3 +112,24 @@ WildLink System Spec (2026-02-11 Update)
         /opt/wildlink/common/ (wmp_core.py)
         /opt/wildlink/node/units/ (unit_camera_v1.py, wmp_stream_tx.py)
     Path Rule: Pythonスクリプトは自身の場所から2段遡って common を path に追加する。
+
+## 6. インターフェース定義 (WildLink VST Interface Standard v1.0)
+マネージャーが各ユニット（WildLink VST (Virtual Sensor Technology)）をどう扱い、Web UIがどう表示するかの規約である
+
+1. ユニット・クラス構成 (Unit Class)
+すべてのユニットは、以下のメソッドを実装しなければならない。
+    メソッド名      引数    戻り値      役割
+__init__(config)    dict	なし	config（DBのval_params）を受け取り初期化
+update(commands)	dict	dict	MQTT等の指示を受け取り、現在の状態（val_status等）を返す
+
+2. 通信・データ交換規約
+・Input (Command): マネージャーからユニットへ渡す辞書型。
+    例: {"act_stream": true, "val_interval": 10}
+・Output (Status/Log): ユニットからマネージャーへ返す辞書型。
+    例: {"val_status": "streaming", "env_temp": 25.5, "log_msg": "OK"}
+
+3. データベース連動 (VST Meta Data)
+Web UIが「どんなカードを作るべきか」を判断するための node_configs.val_params 内の標準キーです。
+・ui_type: camera, sensor_card, toggle_switch, gauge
+・ui_order: 表示順序 (int)
+・ui_color: テーマカラー (CSS color)
