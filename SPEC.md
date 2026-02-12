@@ -1,5 +1,5 @@
 # WildLink 命名規約仕様書 (SPEC.md)
-更新日: 2026-02-11
+更新日: 2026-02-12
 
 ## 1. 項目名接頭語 (Prefix)
 すべての項目名は以下の接頭語を使用し、すべて小文字で表記する。
@@ -40,40 +40,68 @@
 ### パス参照の標準（Python）
 ユニットから `common` を参照する際は、必ず自身の場所から2段遡る実装とする。
 
-## 5. データベース構造
--- WildLink Database Standard Schema (2026-02-11)
+## 5. データベース設計 (VSTプラグイン対応版)
 
--- 1. ノードマスタ (sys_id が主キー)
+### テーブル構成
+1. **nodes (戸籍)**: ノードの属性・位置・電源情報。
+2. **node_configs (動作設定)**: VST（プラグイン）のパラメータ、動作間隔、解像度等。
+3. **sensor_logs (履歴)**: 測定数値、システム状態。
+4. **command_logs (指令)**: 実行されたアクションの履歴。
+
+
+-- WildLink Database Standard Schema (2026-02-12)
+-- 既存テーブルの削除（順番に注意）
+DROP TABLE IF EXISTS node_configs;
+DROP TABLE IF EXISTS command_logs;
+DROP TABLE IF EXISTS sensor_logs;
+DROP TABLE IF EXISTS nodes;
+
+-- 1. nodes (戸籍テーブル)
 CREATE TABLE nodes (
-    sys_id VARCHAR(50) PRIMARY KEY, -- 例: 'node_001'
-    val_name VARCHAR(100),          -- 表示名
-    net_ip VARCHAR(15),             -- 最終IP
-    sys_status VARCHAR(20),         -- online/offline
-    val_ui_config JSON,             -- UIの並び順等の設定
-    last_update DATETIME
+    sys_id VARCHAR(50) PRIMARY KEY,
+    val_name VARCHAR(100),       -- ノードの愛称
+    loc_name VARCHAR(100),       -- 設置場所 (例: 裏山第一)
+    loc_lat DECIMAL(10, 7),      -- 緯度
+    loc_lon DECIMAL(10, 7),      -- 経度
+    hw_pwr_src VARCHAR(20),      -- 電源 (battery/solar/ac)
+    net_ip VARCHAR(15),          -- 最終確認IP
+    sys_status VARCHAR(20),      -- online/offline/maintenance
+    val_ui_layout JSON,          -- VSTカードの並び順
+    log_note TEXT,               -- 自由記述メモ
+    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
--- 2. コマンド履歴 (act_type 接頭語を使用)
-CREATE TABLE command_logs (
-    id INT AUTO_INCREMENT PRIMARY KEY,
+-- 2. node_configs (VST設定・動作パラメータ)
+CREATE TABLE node_configs (
     sys_id VARCHAR(50),
-    act_type VARCHAR(50),           -- 'cam_start', 'cam_stop' 等
-    status VARCHAR(20),             -- 'sent', 'success', 'failed'
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    dev_type VARCHAR(50),        -- camera, dht22, etc.
+    val_params JSON,             -- {"val_res": "640x480", "ui_type": "camera"}
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (sys_id, dev_type),
+    FOREIGN KEY (sys_id) REFERENCES nodes(sys_id) ON DELETE CASCADE
 );
 
--- 3. 環境・システムデータ (env_, sys_ 接頭語を使用)
+-- 3. sensor_logs (データ履歴)
 CREATE TABLE sensor_logs (
     id INT AUTO_INCREMENT PRIMARY KEY,
     sys_id VARCHAR(50),
     env_temp FLOAT,
     env_hum FLOAT,
-    env_pres FLOAT,
     sys_volt FLOAT,
-    sys_cpu_t FLOAT,
-    log_msg TEXT,
-    raw_data JSON,                  -- 受信した全JSONデータをそのまま保存
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    raw_data JSON,               -- 受信した全生データ
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX (sys_id),
+    INDEX (created_at)
+);
+
+-- 4. command_logs (指令履歴)
+CREATE TABLE command_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    sys_id VARCHAR(50),
+    act_type VARCHAR(50),         -- cam_start, cam_stop 等
+    status VARCHAR(20),           -- sent/success/failed
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX (sys_id)
 );
 
 -------------------------------------------------------------

@@ -51,3 +51,31 @@ class WildLinkUnit:
             if self.process:
                 self.stop_wmp_tx()
             return {"val_status": "idle", "log_msg": self.log_msg}
+
+
+# --- (既存の WildLinkUnit クラスの定義の下に追加) 強制起動---
+
+if __name__ == "__main__":
+    import time
+
+    # テスト用のダミー設定
+    test_config = {
+        "val_name": "TestCamera",
+        "hw_pin": "/dev/video0",
+        "act_stream": True  # 最初から配信オンにする
+    }
+
+    print("--- Unit Test Mode ---")
+    camera = WildLinkUnit(test_config)
+
+    try:
+        while True:
+            # updateメソッドを呼び出してプロセスを維持
+            status = camera.update()
+            # print(f"Current Status: {status}")
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n--- Stopping Test ---")
+        camera.act_stream = False
+        camera.update()
+        print("Done.")
