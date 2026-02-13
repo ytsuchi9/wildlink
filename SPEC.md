@@ -113,7 +113,7 @@ WildLink System Spec (2026-02-11 Update)
         /opt/wildlink/node/units/ (unit_camera_v1.py, wmp_stream_tx.py)
     Path Rule: Pythonスクリプトは自身の場所から2段遡って common を path に追加する。
 
-## 6. インターフェース定義 (WildLink VST Interface Standard v1.0)
+## 6. インターフェース定義 (WildLink VST Interface Standard v1.0) (2026-02-12)
 マネージャーが各ユニット（WildLink VST (Virtual Sensor Technology)）をどう扱い、Web UIがどう表示するかの規約である
 
 1. ユニット・クラス構成 (Unit Class)
@@ -133,3 +133,17 @@ Web UIが「どんなカードを作るべきか」を判断するための node
 ・ui_type: camera, sensor_card, toggle_switch, gauge
 ・ui_order: 表示順序 (int)
 ・ui_color: テーマカラー (CSS color)
+
+### VST (Virtual Sensor Technology) インターフェース規約 (2026-02-13)
+
+全てのノード側デバイスユニットは、`common/vst_base.py` の `WildLinkVSTBase` を継承すること。
+
+1. **基本メソッド**
+   - `__init__(self, config)`: DBの `val_params` (JSON) を受け取り、属性(self.val_xxx)を初期化する。
+   - `update(self, act_cmds)`: 毎秒実行される。`act_cmds`（MQTT経由の指示）を受け取り、最新の状態を辞書で返す。
+   - `sense(self)`: `val_interval` 周期で実行される。センサー値の取得ロジックをここに記述する。
+   - `execute_actions(self, cmds)`: `act_xxx` 系の命令が届いた際の処理を記述する。
+
+2. **命名規則の強制**
+   - ユニット内の変数は、共通仕様書の接頭語（`env_`, `val_`, `act_`, `sys_`, `log_`）を厳守する。
+   - `_report()` メソッドにより、これらの接頭語を持つ変数は自動的にMQTTでHubへ報告される。
