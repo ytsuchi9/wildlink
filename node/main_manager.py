@@ -1,58 +1,65 @@
 import sys
 import os
-
-# --- 共通パスの追加 ---
-# 1. 自分の場所を取得 (/opt/wildlink/node)
-current_dir = os.path.dirname(os.path.abspath(__file__))
-# 2. 親の場所を取得 (/opt/wildlink)
-wildlink_root = os.path.dirname(current_dir)
-# 3. common と node 自身をパスに追加
-sys.path.append(os.path.join(wildlink_root, "common"))
-sys.path.append(current_dir) # units フォルダを見つけるため
-
-# パスを通した後にインポートする
 import time
 import json
-import paho.mqtt.client as mqtt
-from units.unit_camera_v1 import WildLinkUnit as CameraVST
-
-# 「動的ロード」部分の予習
 import importlib
+import paho.mqtt.client as mqtt
+import mysql.connector
+from dotenv import load_dotenv
 
-# --- 設定 ---
-NODE_ID = "node_001"
-MQTT_HOST = "192.168.0.102" # Hub(Pi 2)のIP
+# --- パス解決 & 環境変数 ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+wildlink_root = os.path.dirname(current_dir)
+sys.path.append(os.path.join(wildlink_root, "common"))
+sys.path.append(current_dir)
+
+load_dotenv(os.path.join(wildlink_root, ".env"))
+
+NODE_ID = os.getenv('NODE_ID', 'node_001')
+MQTT_HOST = os.getenv('MQTT_BROKER') # Pi 2 の IP
+
+DB_CONFIG = {
+    'host': MQTT_HOST, 
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASS'),
+    'database': os.getenv('DB_NAME')
+}
+
 TOPIC_CMD = f"wildlink/{NODE_ID}/cmd"
 TOPIC_RES = f"wildlink/{NODE_ID}/res"
 
-# 「動的ロード」部分の予習
-def load_vst_units(config_list):
-    loaded_units = []
-    for cfg in config_list:
-        # 例: vst_type が "camera" なら units.unit_camera_v1 を探す
-        module_path = f"units.unit_{cfg['vst_type']}_v1"
-        module = importlib.import_module(module_path)
-        
-        # クラス (WildLinkUnit) をインスタンス化
-        vst_class = getattr(module, cfg['vst_class'])
-        instance = vst_class(cfg['val_params'])
-        loaded_units.append(instance)
-    return loaded_units
-
-# 命令を保持する一時バッファ
 current_commands = {}
 
-# --- MQTT コールバック ---
 def on_message(client, userdata, msg):
     global current_commands
     try:
-        payload = json.loads(msg.payload.decode())
-        current_commands.update(payload)
-        print(f"[*] Received Command: {payload}")
-    except Exception as e:
-        print(f"Error parsing MQTT: {e}")
+        current_commands.update(json.loads(msg.payload.decode()))
+    except: pass
 
-# --- メインロジック ---
+def load_units_from_db():
+    loaded = []
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor(dictionary=True)
+        query = """
+            SELECT c.vst_type, c.val_params, cat.vst_class, cat.vst_module
+            FROM node_configs c
+            JOIN device_catalog cat ON c.vst_type = cat.vst_type
+            WHERE c.sys_id = %s AND c.val_enabled = TRUE
+        """
+        cursor.execute(query, (NODE_ID,))
+        for cfg in cursor.fetchall():
+            module = importlib.import_module(cfg["vst_module"])
+            vst_class = getattr(module, cfg["vst_class"])
+            params = json.loads(cfg["val_params"]) if isinstance(cfg["val_params"], str) else cfg["val_params"]
+            params["sys_id"] = NODE_ID
+            loaded.append(vst_class(params))
+            print(f"✅ VST Loaded: {cfg['vst_type']}")
+        conn.close()
+    except Exception as e:
+        print(f"[!!] DB Connection Error: {e}")
+    return loaded
+
 def main():
     client = mqtt.Client()
     client.on_message = on_message
@@ -60,33 +67,22 @@ def main():
     client.subscribe(TOPIC_CMD)
     client.loop_start()
 
-    # 1. 本来はDBから取得するが、まずは手動でVSTをリスト化
-    # 今後はここを動的にインポート・生成する仕組みにします
-    vst_units = [
-        CameraVST({"sys_id": NODE_ID, "val_name": "FrontCamera", "hw_pin": "/dev/video0"})
-    ]
-
-    print(f"🚀 WildLink Manager [{NODE_ID}] started.")
+    vst_units = load_units_from_db()
+    print(f"🚀 WildLink Manager [{NODE_ID}] Operational.")
 
     try:
         while True:
             all_reports = {}
-            
             for unit in vst_units:
-                # VSTの更新 (命令を渡し、状態を受け取る)
                 report = unit.update(current_commands)
                 all_reports[unit.val_name] = report
-
-            # 状態をMQTTでHubへ報告
-            client.publish(TOPIC_RES, json.dumps(all_reports))
             
-            # 命令バッファをクリア (1回実行したら忘れる)
+            if all_reports:
+                client.publish(TOPIC_RES, json.dumps(all_reports))
+            
             current_commands.clear()
-            
-            time.sleep(1) # 1秒周期でループ
-
+            time.sleep(1)
     except KeyboardInterrupt:
-        print("Stopping Manager...")
         client.loop_stop()
 
 if __name__ == "__main__":

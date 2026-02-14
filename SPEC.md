@@ -1,149 +1,83 @@
-# WildLink 命名規約仕様書 (SPEC.md)
-更新日: 2026-02-12
+WildLink システム詳細仕様書 (SPEC.md)
+1. 物理配置・動作環境
+Hub (Parent): Raspberry Pi 2 (IP: 192.168.0.102)
 
-## 1. 項目名接頭語 (Prefix)
-すべての項目名は以下の接頭語を使用し、すべて小文字で表記する。
+Node (Child): Raspberry Pi Zero (IP: 192.168.0.xxx)
 
-| 接頭語 | 意味 | 項目例 |
-| :--- | :--- | :--- |
-| **hw_** | 物理固定/ハードウェア | hw_pin, hw_driver, hw_bus, hw_addr |
-| **val_** | 動作設定/変数 | val_interval, val_enabled, val_res, val_name |
-| **act_** | 発動条件/制御 | act_line, act_rec, act_strobe, act_stream |
-| **env_** | 測定数値 (環境) | env_temp, env_hum, env_pres, env_lux |
-| **sys_** | 本体状態 (システム) | sys_cpu_t, sys_volt, sys_disk, sys_up, sys_id |
-| **log_** | 記録/履歴 | log_level, log_msg, log_code, log_ext |
-| **net_** | 通信関連 | net_ssid, net_rssi, net_ip |
-| **loc_** | 位置情報 | loc_lat, loc_lon, loc_dir |
+共通ルートパス: /opt/wildlink (シンボリックリンク推奨)
 
-## 2. 基本データ型 (Data Types)
-- **Boolean**: `true` / `false`
-- **DateTime**: ISO 8601 形式 (`YYYY-MM-DDTHH:MM:SS`)
-- **Status**: 
-    - `val_status`: 物理的な接続・動作状態
-    - `val_paused`: 一時停止フラグ (true/false)
+通信: MQTT (Port 1883), UDP (Port 5005), HTTP (Port 8080)
 
-## 3. MQTT トピック構造
-- **Command**: `wildlink/{sys_id}/cmd` (Payload: `cam_start`, `cam_stop` 等の文字列)
-- **Data**: `wildlink/{sys_id}/data` (Payload: JSON形式のセンサーデータ)
+2. 環境変数管理 (.env)
+セキュリティとポータビリティのため、以下のキーを /opt/wildlink/.env に定義する。
 
-## 4. 標準ディレクトリ構造 (Deployment Standard)
-システムの一貫性を保つため、全ノードで以下の構造を維持する。
+MQTT_BROKER: MQTTブローカー（Hub）のIPアドレス
 
-| パス | 役割 | 主な内容 |
-| :--- | :--- | :--- |
-| `/opt/wildlink/common/` | 共通ライブラリ | `wmp_core.py`, 通信プロトコル定義 |
-| `/opt/wildlink/config/` | 設定・認証 | `node_config.json`, `.env` |
-| `/opt/wildlink/hub/` | サーバー機能 (Pi 2) | `wmp_stream_rx.py`, API, DB連携 |
-| `/opt/wildlink/node/` | 端末機能 (Pi Zero) | `main_manager.py` |
-| `/opt/wildlink/node/units/` | 物理制御 | 各種センサー/カメラ送信ユニット (`tx`) |
+DB_HOST: DBサーバー（Hub）のIPアドレス (Hub自身は 127.0.0.1)
 
-### パス参照の標準（Python）
-ユニットから `common` を参照する際は、必ず自身の場所から2段遡る実装とする。
+DB_USER: データベース接続ユーザー名
 
-## 5. データベース設計 (VSTプラグイン対応版)
+DB_PASS: データベース接続パスワード
 
-### テーブル構成
-1. **nodes (戸籍)**: ノードの属性・位置・電源情報。
-2. **node_configs (動作設定)**: VST（プラグイン）のパラメータ、動作間隔、解像度等。
-3. **sensor_logs (履歴)**: 測定数値、システム状態。
-4. **command_logs (指令)**: 実行されたアクションの履歴。
+DB_NAME: 使用データベース名 (wildlink_db)
 
+NODE_ID: ノード識別子 (例: node_001)
 
--- WildLink Database Standard Schema (2026-02-12)
--- 既存テーブルの削除（順番に注意）
-DROP TABLE IF EXISTS node_configs;
-DROP TABLE IF EXISTS command_logs;
-DROP TABLE IF EXISTS sensor_logs;
-DROP TABLE IF EXISTS nodes;
+3. 命名規則・データ型
+接頭語ルール
+hw_: 物理固定 (例: hw_pin, hw_bus, hw_driver)
 
--- 1. nodes (戸籍テーブル)
-CREATE TABLE nodes (
-    sys_id VARCHAR(50) PRIMARY KEY,
-    val_name VARCHAR(100),       -- ノードの愛称
-    loc_name VARCHAR(100),       -- 設置場所 (例: 裏山第一)
-    loc_lat DECIMAL(10, 7),      -- 緯度
-    loc_lon DECIMAL(10, 7),      -- 経度
-    hw_pwr_src VARCHAR(20),      -- 電源 (battery/solar/ac)
-    net_ip VARCHAR(15),          -- 最終確認IP
-    sys_status VARCHAR(20),      -- online/offline/maintenance
-    val_ui_layout JSON,          -- VSTカードの並び順
-    log_note TEXT,               -- 自由記述メモ
-    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+val_: 動作設定 (例: val_enabled, val_interval, val_res, val_fps)
 
--- 2. node_configs (VST設定・動作パラメータ)
-CREATE TABLE node_configs (
-    sys_id VARCHAR(50),
-    dev_type VARCHAR(50),        -- camera, dht22, etc.
-    val_params JSON,             -- {"val_res": "640x480", "ui_type": "camera"}
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (sys_id, dev_type),
-    FOREIGN KEY (sys_id) REFERENCES nodes(sys_id) ON DELETE CASCADE
-);
+act_: 発動条件・指令 (例: act_stream, act_line, act_config_reload)
 
--- 3. sensor_logs (データ履歴)
-CREATE TABLE sensor_logs (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    sys_id VARCHAR(50),
-    env_temp FLOAT,
-    env_hum FLOAT,
-    sys_volt FLOAT,
-    raw_data JSON,               -- 受信した全生データ
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX (sys_id),
-    INDEX (created_at)
-);
+env_: 測定数値 (例: env_temp, env_hum, env_volt, env_lux)
 
--- 4. command_logs (指令履歴)
-CREATE TABLE command_logs (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    sys_id VARCHAR(50),
-    act_type VARCHAR(50),         -- cam_start, cam_stop 等
-    status VARCHAR(20),           -- sent/success/failed
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX (sys_id)
-);
+sys_: 本体状態 (例: sys_cpu_t, sys_volt, sys_up, sys_disk)
 
--------------------------------------------------------------
-WildLink System Spec (2026-02-11 Update)
-    Naming: act_stream (映像配信フラグ), val_status (動作状態)
-    DB Table: nodes, command_logs, sensor_logs (JSON raw_data 含む)
-    Directory:
-        /opt/wildlink/common/ (wmp_core.py)
-        /opt/wildlink/node/units/ (unit_camera_v1.py, wmp_stream_tx.py)
-    Path Rule: Pythonスクリプトは自身の場所から2段遡って common を path に追加する。
+net_: 通信関連 (例: net_ssid, net_rssi, net_ip)
 
-## 6. インターフェース定義 (WildLink VST Interface Standard v1.0) (2026-02-12)
-マネージャーが各ユニット（WildLink VST (Virtual Sensor Technology)）をどう扱い、Web UIがどう表示するかの規約である
+log_: 記録/履歴 (例: log_level, log_msg, log_code)
 
-1. ユニット・クラス構成 (Unit Class)
-すべてのユニットは、以下のメソッドを実装しなければならない。
-    メソッド名      引数    戻り値      役割
-__init__(config)    dict	なし	config（DBのval_params）を受け取り初期化
-update(commands)	dict	dict	MQTT等の指示を受け取り、現在の状態（val_status等）を返す
+基本型
+Boolean: true / false
 
-2. 通信・データ交換規約
-・Input (Command): マネージャーからユニットへ渡す辞書型。
-    例: {"act_stream": true, "val_interval": 10}
-・Output (Status/Log): ユニットからマネージャーへ返す辞書型。
-    例: {"val_status": "streaming", "env_temp": 25.5, "log_msg": "OK"}
+DateTime: ISO 8601 形式
 
-3. データベース連動 (VST Meta Data)
-Web UIが「どんなカードを作るべきか」を判断するための node_configs.val_params 内の標準キーです。
-・ui_type: camera, sensor_card, toggle_switch, gauge
-・ui_order: 表示順序 (int)
-・ui_color: テーマカラー (CSS color)
+Status: val_status (稼働状態), val_paused (一時停止)
 
-### VST (Virtual Sensor Technology) インターフェース規約 (2026-02-13)
+4. データベース定義 (Schema v1.1)
+構成管理テーブル
+nodes: ノードの静的情報 (sys_id, val_name, loc_lat, loc_lon)
 
-全てのノード側デバイスユニットは、`common/vst_base.py` の `WildLinkVSTBase` を継承すること。
+device_catalog: VSTユニットの索引 (vst_type, vst_class, vst_module, default_params)
 
-1. **基本メソッド**
-   - `__init__(self, config)`: DBの `val_params` (JSON) を受け取り、属性(self.val_xxx)を初期化する。
-   - `update(self, act_cmds)`: 毎秒実行される。`act_cmds`（MQTT経由の指示）を受け取り、最新の状態を辞書で返す。
-   - `sense(self)`: `val_interval` 周期で実行される。センサー値の取得ロジックをここに記述する。
-   - `execute_actions(self, cmds)`: `act_xxx` 系の命令が届いた際の処理を記述する。
+node_configs: ノードごとの動的構成 (sys_id, vst_type, val_params, val_enabled)
 
-2. **命名規則の強制**
-   - ユニット内の変数は、共通仕様書の接頭語（`env_`, `val_`, `act_`, `sys_`, `log_`）を厳守する。
-   - `_report()` メソッドにより、これらの接頭語を持つ変数は自動的にMQTTでHubへ報告される。
+ログ蓄積テーブル
+sensor_logs: 環境測定値 (env_系) を格納。JSON形式の raw_data を併設。
+
+system_logs: 本体の健康状態 (sys_系, net_系) を格納。
+
+5. ソフトウェアコンポーネント詳細
+A. main_manager.py (Node側)
+役割: 起動時にHubのDBから自ノードの node_configs を取得し、対応するVSTクラスを動的に importlib でロード・インスタンス化する。
+
+メインループ: 1秒周期で全VSTの update(current_commands) を実行し、戻り値を一括してMQTT (wildlink/{node_id}/res) へパブリッシュする。
+
+B. hub_manager.py (Hub側)
+役割: MQTT (wildlink/+/res) を常時監視。
+
+仕分けロジック: 受信したJSONのキーを走査し、env_ で始まる場合は sensor_logs へ、sys_ または net_ で始まる場合は system_logs へ自動的に INSERT する。
+
+C. wmp_stream_rx.py (Hub側)
+役割: Nodeから送出されるUDPパケットを wmp_core を用いて再構築。
+
+配信: MJPEG形式でHTTP配信 (/stream)。マルチスレッドにより、複数の閲覧者やDB保存処理と干渉せずに映像を維持する。
+
+6. 既知の課題と今後の拡張
+終了時ラグ: FFmpegプロセスのクリーンアップとMQTTのDisconnect処理に時間がかかる。シグナルハンドリングの改善が必要。
+
+ローカルキャッシュ: DB切断時の起動を保証するため、起動時に取得したDB情報を /opt/wildlink/node/config_cache.json に保存・参照する仕組みを導入予定。
+
+再読み込み機能: act_config_reload: true を受け取った際、マネージャーを再起動せずにVSTユニットの再生成を行う処理の追加。
