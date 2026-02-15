@@ -3,87 +3,84 @@ import os
 import time
 import json
 import importlib
+import signal
 import paho.mqtt.client as mqtt
-import mysql.connector
-from dotenv import load_dotenv
+from dotenv import load_dotenv # 先にインポート
 
-# --- パス解決 & 環境変数 ---
+# --- 最強のパス解決ロジック ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 wildlink_root = os.path.dirname(current_dir)
 sys.path.append(os.path.join(wildlink_root, "common"))
 sys.path.append(current_dir)
 
+# 🔥 ここで先に .env をロードする！
 load_dotenv(os.path.join(wildlink_root, ".env"))
 
+# デバッグ用：これでIPが出ればOK
+print(f"DEBUG: MQTT_BROKER is {os.getenv('MQTT_BROKER')}")
+
+# その後に土管を呼ぶ
+try:
+    from db_bridge import DBBridge
+    print("✅ Success: DBBridge loaded via 土管.")
+except ImportError as e:
+    print(f"❌ Error: Could not find db_bridge.py. {e}")
+    sys.exit(1)
+
+# --- 設定 ---
 NODE_ID = os.getenv('NODE_ID', 'node_001')
-MQTT_HOST = os.getenv('MQTT_BROKER') # Pi 2 の IP
+MQTT_HOST = os.getenv('MQTT_BROKER')
+running = True
 
-DB_CONFIG = {
-    'host': MQTT_HOST, 
-    'user': os.getenv('DB_USER'),
-    'password': os.getenv('DB_PASS'),
-    'database': os.getenv('DB_NAME')
-}
+def handle_sigint(signum, frame):
+    global running
+    print("\n[*] Stopping WildLink Manager...")
+    running = False
 
-TOPIC_CMD = f"wildlink/{NODE_ID}/cmd"
-TOPIC_RES = f"wildlink/{NODE_ID}/res"
-
-current_commands = {}
-
-def on_message(client, userdata, msg):
-    global current_commands
-    try:
-        current_commands.update(json.loads(msg.payload.decode()))
-    except: pass
-
-def load_units_from_db():
-    loaded = []
-    try:
-        conn = mysql.connector.connect(**DB_CONFIG)
-        cursor = conn.cursor(dictionary=True)
-        query = """
-            SELECT c.vst_type, c.val_params, cat.vst_class, cat.vst_module
-            FROM node_configs c
-            JOIN device_catalog cat ON c.vst_type = cat.vst_type
-            WHERE c.sys_id = %s AND c.val_enabled = TRUE
-        """
-        cursor.execute(query, (NODE_ID,))
-        for cfg in cursor.fetchall():
-            module = importlib.import_module(cfg["vst_module"])
-            vst_class = getattr(module, cfg["vst_class"])
-            params = json.loads(cfg["val_params"]) if isinstance(cfg["val_params"], str) else cfg["val_params"]
-            params["sys_id"] = NODE_ID
-            loaded.append(vst_class(params))
-            print(f"✅ VST Loaded: {cfg['vst_type']}")
-        conn.close()
-    except Exception as e:
-        print(f"[!!] DB Connection Error: {e}")
-    return loaded
+signal.signal(signal.SIGINT, handle_sigint)
+signal.signal(signal.SIGTERM, handle_sigint)
 
 def main():
-    client = mqtt.Client()
-    client.on_message = on_message
+    # 土管の初期化（.envのパスを明示的に渡す）
+    bridge = DBBridge(dotenv_path=os.path.join(wildlink_root, ".env"))
+    
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.connect(MQTT_HOST, 1883, 60)
-    client.subscribe(TOPIC_CMD)
     client.loop_start()
 
-    vst_units = load_units_from_db()
+    # 土管から設定を取得
+    configs = bridge.fetch_node_config(NODE_ID)
+    vst_units = []
+    
+    if configs:
+        for cfg in configs:
+            try:
+                module = importlib.import_module(cfg["vst_module"])
+                vst_class = getattr(module, cfg["vst_class"])
+                params = json.loads(cfg["val_params"]) if isinstance(cfg["val_params"], str) else cfg["val_params"]
+                vst_units.append(vst_class(params))
+                print(f"✅ VST Loaded: {cfg['vst_type']}")
+            except Exception as e:
+                print(f"❌ Failed to load VST {cfg['vst_type']}: {e}")
+
     print(f"🚀 WildLink Manager [{NODE_ID}] Operational.")
 
     try:
-        while True:
+        while running:
             all_reports = {}
             for unit in vst_units:
-                report = unit.update(current_commands)
+                # 本来はここで current_commands を渡すが一旦空で
+                report = unit.update({})
                 all_reports[unit.val_name] = report
             
             if all_reports:
-                client.publish(TOPIC_RES, json.dumps(all_reports))
+                client.publish(f"wildlink/{NODE_ID}/res", json.dumps(all_reports))
             
-            current_commands.clear()
             time.sleep(1)
-    except KeyboardInterrupt:
+    finally:
         client.loop_stop()
+        client.disconnect()
+        print("[*] Cleanup complete. Good night!")
 
 if __name__ == "__main__":
     main()
