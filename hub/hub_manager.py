@@ -2,95 +2,88 @@ import paho.mqtt.client as mqtt
 import json
 import os
 import sys
-from dotenv import load_dotenv
+import subprocess
+import time
+from datetime import datetime
 
 # --- パス解決 ---
-# /opt/wildlink/hub から一つ上の common を参照できるようにする
 current_dir = os.path.dirname(os.path.abspath(__file__))
 wildlink_root = os.path.dirname(current_dir)
-sys.path.append(os.path.join(wildlink_root, "common"))
+common_path = os.path.join(wildlink_root, "common")
+sys.path.append(common_path)
 
 from db_bridge import DBBridge
 
-# 環境変数の読み込み
-load_dotenv(os.path.join(wildlink_root, ".env"))
-
-# 土管（DBBridge）の初期化
-bridge = DBBridge(dotenv_path=os.path.join(wildlink_root, ".env"))
-
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
-        print("✅ Connected to MQTT Broker")
-        # すべてのノードのレスポンスを購読
-        client.subscribe("wildlink/+/res")
-    else:
-        print(f"❌ Connection failed with code {rc}")
-
-def on_message(client, userdata, msg):
-    try:
-        # トピック例: wildlink/node_001/res
-        topic_parts = msg.topic.split('/')
-        node_id = topic_parts[1]
+class WildLinkHubManager:
+    def __init__(self):
+        self.db = DBBridge()
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id="wildlink_hub")
+        self.client.on_connect = self.on_connect
+        self.client.on_message = self.on_message
         
-        payload = json.loads(msg.payload.decode())
-        print(f"[*] Received report from {node_id}")
+        # 映像受信プロセスの管理用
+        self.stream_process = None
+        self.rx_script_path = os.path.join(current_dir, "wmp_stream_rx.py")
 
-        # 各ユニット（Camera, SysMonitor等）ごとのデータをループ処理
-        for unit_name, unit_data in payload.items():
-            
-            # 1. 命名規則に基づいたデータの仕分け
-            # env_ で始まるキーを抽出（環境データ）
-            env_data = {k: v for k, v in unit_data.items() if k.startswith('env_')}
-            
-            # sys_ または net_ で始まるキーを抽出（システム状態データ）
-            sys_data = {k: v for k, v in unit_data.items() if k.startswith('sys_') or k.startswith('net_')}
-
-            # 2. sensor_logs への保存
-            if env_data:
-                sql = """
-                    INSERT INTO sensor_logs (sys_id, env_temp, env_hum, raw_data) 
-                    VALUES (%s, %s, %s, %s)
-                """
-                # JSONには他のデータも含まれる可能性があるため unit_data 全体を raw_data に保存
-                params = (node_id, env_data.get('env_temp'), env_data.get('env_hum'), json.dumps(unit_data))
-                bridge.save_log(sql, params)
-
-            # 3. system_logs への保存
-            if sys_data:
-                sql = """
-                    INSERT INTO system_logs (sys_id, sys_volt, sys_cpu_t, net_rssi, log_msg) 
-                    VALUES (%s, %s, %s, %s, %s)
-                """
-                params = (
-                    node_id, 
-                    sys_data.get('sys_volt'), 
-                    sys_data.get('sys_cpu_t'), 
-                    sys_data.get('net_rssi'), 
-                    unit_data.get('log_msg', 'Normal')
+    def manage_stream_process(self, is_active):
+        """wmp_stream_rx.py の起動と停止を管理"""
+        if is_active:
+            # プロセスが動いていない場合のみ起動
+            if self.stream_process is None or self.stream_process.poll() is not None:
+                print(f"🎬 Starting Stream Receiver: {self.rx_script_path}")
+                self.stream_process = subprocess.Popen(
+                    ["python3", self.rx_script_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT
                 )
-                bridge.save_log(sql, params)
+        else:
+            # プロセスが動いていたら停止
+            if self.stream_process and self.stream_process.poll() is None:
+                print("🛑 Stopping Stream Receiver...")
+                self.stream_process.terminate()
+                try:
+                    self.stream_process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.stream_process.kill()
+                self.stream_process = None
 
-        # 4. ノードの生存確認（last_seen）を更新
-        update_node_sql = "UPDATE nodes SET last_seen = CURRENT_TIMESTAMP WHERE sys_id = %s"
-        bridge.save_log(update_node_sql, (node_id,))
+    def on_connect(self, client, userdata, flags, rc):
+        print(f"🌐 Hub Manager Connected (Result code {rc})")
+        client.subscribe("wildlink/+/res")
 
-    except Exception as e:
-        print(f"❌ Error processing message: {e}")
+    def on_message(self, client, userdata, msg):
+        try:
+            topic_parts = msg.topic.split('/')
+            node_id = topic_parts[1]
+            payload = json.loads(msg.payload.decode())
+            
+            # 1. DB更新（ステータスや環境データ）
+            self.db.update_node_status(node_id, payload)
+            
+            # 2. 映像ストリーム命令の成否をチェックしてプロセスを連動
+            # payload["camera"]["act_stream"] があるか確認
+            if "camera" in payload and "act_stream" in payload["camera"]:
+                is_streaming = payload["camera"]["act_stream"]
+                # コマンドが成功(success)または実行中(ack)の場合に連動
+                if payload.get("val_status") in ["success", "ack"]:
+                    self.manage_stream_process(is_streaming)
+                elif not is_streaming:
+                    # 明示的に false が来た場合も止める
+                    self.manage_stream_process(False)
 
-def main():
-    # MQTTクライアントの設定
-    # 注意: Callback API v2 (最新) に対応させています
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
-    client.on_connect = on_connect
-    client.on_message = on_message
+        except Exception as e:
+            print(f"❌ Error in Hub on_message: {e}")
 
-    # Broker (自分自身) に接続
-    try:
-        client.connect("127.0.0.1", 1883, 60)
-        print("🚀 Hub Manager is starting...")
-        client.loop_forever()
-    except Exception as e:
-        print(f"❌ Could not connect to MQTT Broker: {e}")
+    def run(self):
+        broker = os.getenv("MQTT_BROKER", "localhost")
+        self.client.connect(broker, 1883, 60)
+        print(f"📡 Hub Manager starting loop (Broker: {broker})...")
+        try:
+            self.client.loop_forever()
+        except KeyboardInterrupt:
+            self.manage_stream_process(False) # 終了時に受信機も殺す
+            print("Hub Manager stopped.")
 
 if __name__ == "__main__":
-    main()
+    manager = WildLinkHubManager()
+    manager.run()

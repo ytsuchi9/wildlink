@@ -31,7 +31,7 @@ class VSTSysMonitor(WildLinkVSTBase): # 継承元を修正
             return 0
         return 0
 
-    def update(self, cmd_dict):
+    def update(self, cmd_dict=None):
         # 命名規則: sys_ (状態), net_ (通信)
         report = {
             "sys_cpu_t": self.get_cpu_temp(),
