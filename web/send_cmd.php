@@ -1,21 +1,21 @@
 <?php
-// send_cmd.php
+// /var/www/html/send_cmd.php
 require_once 'db_config.php';
-header('Content-Type: application/json');
 
-$sys_id = $_POST['node_id'] ?? 'node_001';
-$cmd    = $_POST['cmd']     ?? ''; 
-$params = $_POST['val']     ?? ''; 
+// デバッグ用：何が届いたかログに残す
+file_put_contents('cmd_debug.log', print_r($_POST, true), FILE_APPEND);
 
-// カラム名は cmd_type であることを確認済み
-$sql = "INSERT INTO node_commands (sys_id, cmd_type, cmd_json, val_status) VALUES (?, ?, ?, 'pending')";
-$stmt = $mysqli->prepare($sql);
-$stmt->bind_param("sss", $sys_id, $cmd, $params);
+$node_id = $_POST['node_id'] ?? 'node_001';
+$cmd = $_POST['cmd'] ?? 'cam';
+$val = $_POST['val'] ?? '{}';
 
-if ($stmt->execute()) {
-    echo json_encode(["val_status" => "success", "log_msg" => "Command accepted"]);
-} else {
-    echo json_encode(["val_status" => "error", "log_msg" => $mysqli->error]);
-}
+$topic = "vst/{$node_id}/cmd/{$cmd}";
 
-$mysqli->close();
+// 確実にトピックと中身を指定して実行
+$shell_cmd = "mosquitto_pub -h localhost -t '$topic' -m '$val' 2>&1";
+$output = shell_exec($shell_cmd);
+
+// 実行結果もログに残す
+file_put_contents('cmd_debug.log', "Result: $output\n", FILE_APPEND);
+
+echo json_encode(["status" => "ok", "debug" => $output]);

@@ -1,23 +1,28 @@
 <?php
-// get_node_config.php
-require_once 'db_config.php'; // ここで $mysqli を取得
+require_once 'db_config.php';
 header('Content-Type: application/json');
 
 $node_id = $_GET['node_id'] ?? 'node_001';
 
-// node_configs テーブルから取得（命名規則に基づき val_params 等を使用）
-$sql = "SELECT vst_type, val_params FROM node_configs WHERE sys_id = ?";
-$stmt = $mysqli->prepare($sql);
-$stmt->bind_param("s", $node_id);
-$stmt->execute();
-$result = $stmt->get_result();
+// log_at は不要なので削除し、正しい JOIN を行います
+$sql = "SELECT nc.vst_type, dc.vst_class, nc.val_params, nc.val_enabled 
+        FROM node_configs nc
+        JOIN device_catalog dc ON nc.vst_type = dc.vst_type
+        WHERE nc.sys_id = ?";
 
-$configs = [];
-while ($row = $result->fetch_assoc()) {
-    // val_params はJSON文字列として保存されている前提でパース
-    $row['val_params'] = json_decode($row['val_params'], true);
-    $configs[] = $row;
+try {
+    $stmt = $mysqli->prepare($sql);
+    $stmt->bind_param("s", $node_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $configs = [];
+    while ($row = $result->fetch_assoc()) {
+        $row['val_params'] = json_decode($row['val_params'], true);
+        $row['val_enabled'] = (int)$row['val_enabled'];
+        $configs[] = $row;
+    }
+    echo json_encode($configs);
+} catch (Exception $e) {
+    echo json_encode(["error" => $e->getMessage()]);
 }
-
-echo json_encode($configs);
 $mysqli->close();

@@ -142,8 +142,8 @@
                 }
 
                 configs.forEach(conf => {
-                    const title = (conf.val_params && conf.val_params.val_name) ? conf.val_params.val_name : conf.vst_type;
-                    createPluginUI(conf.vst_type, title);
+                    // DBのvst_classとvst_typeを利用
+                    createPluginUI(conf.vst_type, conf.vst_class);
                 });
 
                 // ロード完了後にステータス更新を開始
@@ -157,107 +157,114 @@
         }
 
         // 2. プラグインの見た目（UI）を生成
-        function createPluginUI(type, title) {
+        function createPluginUI(type, vClass) {
             const rack = document.getElementById('vst-rack');
             const div = document.createElement('div');
             div.className = `vst-plugin ${type}`;
             
-            // 共通のヘッダーとコンテンツエリア
+            // カテゴリに応じて表示名を変える
+            const displayName = type.toUpperCase();
+
             let inner = `
                 <div class="plugin-header">
-                    <span>${type}</span>
-                    <span>${title}</span>
+                    <span>${vClass}</span>
+                    <span>${displayName}</span>
                 </div>
                 <div class="plugin-content" id="content-${type}">
-                    <div class="status-display" id="disp-${type}">LOADING...</div>
+                    <div class="status-display" id="disp-${type}">OFFLINE</div>
+                    <div id="log-text-${type}" style="font-size:0.6rem; color:#666; width:100%; overflow:hidden; text-align:center;"></div>
                 </div>
             `;
 
-            // --- ここからデバイス別のボタン設定 ---
             inner += `<div class="vst-controls">`;
 
-            switch(type) {
-                case 'camera':
-                    inner += `
-                        <button class="btn-control" onclick="sendCmd('stream_start')">STREAM START</button>
-                        <button class="btn-control" onclick="sendCmd('stream_stop')">STREAM STOP</button>
-                    `;
-                    break;
-
-                case 'dht22':
-                case 'power':
-                    inner += `
-                        <button class="btn-control" onclick="sendCmd('sensor_scan')">FORCE SCAN</button>
-                    `;
-                    break;
-
-                case 'sys_monitor':
-                    inner += `
-                        <button class="btn-control" onclick="sendCmd('sys_reboot')">REBOOT PI</button>
-                    `;
-                    break;
-
-                default:
-                    // 未定義のプラグインは汎用のCALIBRATEを表示
-                    inner += `<button class="btn-control" onclick="sendCmd('calibrate')">CALIBRATE</button>`;
-                    break;
+            // --- クラス（カテゴリ）に基づいたボタン生成 ---
+            const cls = vClass.toLowerCase();
+            if (cls === 'camera') {
+                inner += `
+                    <button class="btn-control" onclick="sendVstCmd('${type}', true)">STREAM START</button>
+                    <button class="btn-control" onclick="sendVstCmd('${type}', false)">STREAM STOP</button>
+                `;
+            } else if (cls === 'sensor') {
+                inner += `
+                    <button class="btn-control" onclick="sendVstCmd('${type}', 'scan')">FORCE SCAN</button>
+                `;
+            } else if (cls === 'actuator') {
+                inner += `
+                    <button class="btn-control" onclick="sendVstCmd('${type}', 'trigger')">ACTIVATE</button>
+                `;
+            } else {
+                inner += `<button class="btn-control" onclick="sendVstCmd('${type}', 'ping')">PING</button>`;
             }
 
-            inner += `</div>`; // .vst-controls 閉じ
-            // --- ここまで ---
-
+            inner += `</div>`;
             div.innerHTML = inner;
             rack.appendChild(div);
         }
 
-        // 3. ステータスの更新（心拍）
+        // 3. ステータスの更新（最新のMQTT報告をDBから取得）
         async function refreshStatus() {
             try {
                 const response = await fetch(`get_node_status.php?node_id=${NODE_ID}`);
                 if (!response.ok) return;
                 
                 const data = await response.json();
-                console.log("Raw received:", data);
-
-                // 1. raw_data（文字列）をオブジェクトに変換
                 let raw = {};
-                if (data.raw_data) {
-                    try {
-                        raw = JSON.parse(data.raw_data);
-                    } catch(e) { console.error("Raw data parse error", e); }
-                }
+                try {
+                    // PiZeroのMainManagerが送ってくるJSON構造を解析
+                    raw = JSON.parse(data.raw_data);
+                } catch(e) { return; }
 
-                // 2. システムモニター (sys_monitor)
-                const sysDisp = document.getElementById('disp-sys_monitor');
-                if (sysDisp && raw.sys_monitor) {
-                    sysDisp.innerHTML = `CPU: ${raw.sys_monitor.sys_cpu_t} °C<br><small>RSSI: ${raw.sys_monitor.net_rssi}</small>`;
-                    sysDisp.style.color = 'var(--accent-color)';
-                }
+                // raw.units に各デバイスの情報が入っている (pi, usb, pir など)
+                if (raw.units) {
+                    // ... refreshStatus 関数の中身を以下に差し替え ...
+                    Object.keys(raw.units).forEach(unitName => {
+                        const unit = raw.units[unitName];
+                        const disp = document.getElementById(`disp-${unitName}`);
+                        const logText = document.getElementById(`log-text-${unitName}`); // ★ここを追加
+                        const imgId = `view-${unitName}`;
+                        let img = document.getElementById(imgId);
 
-                // 3. カメラステータス (camera)
-                const camDisp = document.getElementById('disp-camera');
-                if (camDisp && raw.camera) {
-                    camDisp.innerText = raw.camera.val_status.toUpperCase();
-                    camDisp.style.color = (raw.camera.val_status === 'idle') ? 'cyan' : 'lime';
-                }
+                        if (disp) {
+                            // 文字列 "streaming" との比較を確実にする
+                            const isStreaming = (unit.val_status && unit.val_status.toLowerCase() === 'streaming');
+                            disp.innerText = unit.val_status ? unit.val_status.toUpperCase() : "IDLE";
+                            disp.style.color = isStreaming ? 'var(--success-color)' : 'cyan';
 
-                // 4. DHT22 / Power (もしデータがあれば)
-                // 今回のJSONではまだ入っていないようですが、今後増えた時用に
-                if (raw.dht22) {
-                    const tempDisp = document.getElementById('disp-dht22');
-                    if (tempDisp) tempDisp.innerText = `${raw.dht22.env_temp} °C`;
-                }
+                            if (isStreaming) {
+                                if (!img) {
+                                    img = document.createElement('img');
+                                    img.id = imgId;
+                                    img.style.width = "100%";
+                                    img.style.marginTop = "10px";
+                                    img.style.border = "1px solid #333";
+                                    // キャッシュ回避のためにタイムスタンプを付与
+                                    img.src = `http://192.168.1.102:8080/stream/${unitName}?t=${new Date().getTime()}`;
+                                    
+                                    disp.parentElement.insertBefore(img, disp); 
+                                    disp.style.fontSize = "0.8rem"; 
+                                }
+                            } else {
+                                if (img) {
+                                    img.remove();
+                                    disp.style.fontSize = "1.2rem";
+                                }
+                            }
+                        }
 
+                        // ★logText の存在チェックを追加してエラーを防ぐ
+                        if (logText && unit.log_code) {
+                            logText.innerText = unit.log_code.split('\n').pop().substring(0, 40);
+                        }
+                    });                    
+                 }
             } catch (e) {
                 console.warn("Refresh loop error", e);
             }
         }
 
-        // 4. コマンド送信
-        async function sendCmd(action, value = '') {
-            console.log(`Sending command: ${action}`);
-            
-            // UIを少し「送信中」っぽくする
+        // 4. コマンド送信 (新・汎用バージョン)
+        async function sendVstCmd(target, isRun) {
             const btn = event.target;
             const originalText = btn.innerText;
             btn.innerText = "SENDING...";
@@ -266,36 +273,34 @@
             try {
                 const formData = new URLSearchParams();
                 formData.append('node_id', NODE_ID);
-                formData.append('cmd', action);
-                formData.append('val', value);
+                // VST新仕様: cmdにはカテゴリ(cam)、valにはターゲットとアクションのJSONを入れる
+                formData.append('cmd', 'cam'); 
+                formData.append('val', JSON.stringify({
+                    "hw_target": target,
+                    "act_run": isRun
+                }));
 
                 const response = await fetch('send_cmd.php', {
                     method: 'POST',
                     body: formData
                 });
-                const result = await response.json();
                 
-                if(result.status === 'ok') {
-                    console.log("✅ Command accepted");
-                    // ボタンを緑色に光らせる演出
+                if(response.ok) {
                     btn.style.backgroundColor = "var(--success-color)";
                     btn.innerText = "COMMAND SENT";
                 }
             } catch (e) {
-                console.error("❌ Send failed", e);
+                console.error("Send failed", e);
             } finally {
-                // 2秒後にボタンを元に戻す
                 setTimeout(() => {
                     btn.innerText = originalText;
                     btn.style.backgroundColor = "";
                     btn.disabled = false;
-                }, 2000);
+                }, 1000);
             }
         }
 
-        // 実行
         window.addEventListener('DOMContentLoaded', initRack);
-
     </script>
 </body>
 </html>

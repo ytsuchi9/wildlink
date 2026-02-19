@@ -1,0 +1,29 @@
+[
+    {
+        "vst_type": "pi",
+        "vst_class": "Camera",
+        "val_params": {
+            "val_res": "320x240",
+            "val_fps": 5
+        },
+        "val_enabled": 1
+    },
+    {
+        "vst_type": "usb",
+        "vst_class": "Camera",
+        "val_params": {
+            "val_res": "320x240",
+            "val_fps": 5
+        },
+        "val_enabled": 1
+    },
+    {
+        "vst_type": "pir",
+        "vst_class": "Sensor",
+        "val_params": {
+            "hw_pin": 18,
+            "act_line": true
+        },
+        "val_enabled": 1
+    }
+]

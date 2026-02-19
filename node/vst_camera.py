@@ -33,20 +33,27 @@ class VSTCamera:
         self.wmp = WMPHeader(node_id=self.node_id, media_type=2)
 
     def control(self, payload):
-        """MainManagerから呼ばれる制御窓口"""
-        if payload.get("hw_target", "pi") != self.hw_type:
-            return
+            """MainManagerから呼ばれる制御窓口"""
+            # ターゲットチェックを外すか、ログを出して確認するように変更
+            # print(f"DEBUG: {self.hw_type} received command for {payload.get('hw_target')}")
 
-        if "val_res" in payload: self.val_res = payload["val_res"]
-        if "val_fps" in payload: self.val_fps = payload["val_fps"]
-        
-        if "act_run" in payload:
-            if payload["act_run"]:
-                default_port = 5005 if self.hw_type == "pi" else 5006
-                target_port = payload.get("net_port", default_port)
-                self.start_streaming(payload.get("net_ip"), target_port)
-            else:
-                self.stop_streaming()
+            if "val_res" in payload: self.val_res = payload["val_res"]
+            if "val_fps" in payload: self.val_fps = payload["val_fps"]
+            
+            if "act_run" in payload:
+                if payload["act_run"]:
+                    # Pi2(Hub)のIPを環境変数やデフォルトから取得
+                    target_ip = payload.get("net_ip", "192.168.1.102") 
+                    
+                    # ポート出し分け（pi: 5005, usb: 5006）
+                    default_port = 5005 if self.hw_type == "pi" else 5006
+                    target_port = payload.get("net_port", default_port)
+                    
+                    print(f"[*] Starting {self.hw_type} stream to {target_ip}:{target_port}")
+                    self.start_streaming(target_ip, target_port)
+                else:
+                    print(f"[*] Stopping {self.hw_type} stream")
+                    self.stop_streaming()
 
     def _streaming_loop(self, dest_ip, port):
         """配信スレッドの実体"""
