@@ -1,114 +1,74 @@
-import os
-import sys
 import paho.mqtt.client as mqtt
 import json
 import time
-import importlib
-from datetime import datetime
+import os
 from dotenv import load_dotenv
+from vst_camera import VSTCamera
 
-# --- 1. パス解決：node と common の両方を Python に教える ---
-current_dir = os.path.dirname(os.path.abspath(__file__)) # /opt/wildlink/node
-wildlink_root = os.path.dirname(current_dir)             # /opt/wildlink
-common_dir = os.path.join(wildlink_root, "common")
+load_dotenv()
 
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
-if common_dir not in sys.path:
-    sys.path.insert(0, common_dir)
-
-# --- 2. .env の読み込み ---
-# /opt/wildlink/.env を探しに行く
-load_dotenv(os.path.join(wildlink_root, ".env"))
-
-SYS_ID = os.getenv("SYS_ID", "node_default")
-BROKER_ADDR = os.getenv("MQTT_BROKER", "127.0.0.1")
-
-# --- 3. 自作ベースクラスのインポート ---
-from vst_base import WildLinkVSTBase
-
-class WildLinkMainManager:
+class MainManager:
     def __init__(self):
-        self.vsts = {}
-        # Callback API v1 の警告が出る場合は最新(v2)への移行も検討できますが、一旦維持
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=SYS_ID)
+        self.sys_status = "initializing"
+        
+        # ユニット初期化
+        self.vst_cam_pi = VSTCamera(cam_type="pi", node_id="pi0_csi")
+        self.vst_cam_usb = VSTCamera(cam_type="usb", node_id="pi0_usb")
+        
+        self.broker = os.getenv("MQTT_BROKER", "localhost")
+        self.base_topic = os.getenv("MQTT_BASE_TOPIC", "vst/pi0")
+        
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, "vst_pi0_manager")
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
 
-    def load_vsts_from_config(self, config_list):
-        for cfg in config_list:
-            vst_type = cfg['vst_type']
-            module_name = cfg['vst_module']
-            class_name = cfg['vst_class']
-            params = json.loads(cfg['val_params']) if isinstance(cfg['val_params'], str) else cfg['val_params']
-
-            try:
-                module = importlib.import_module(module_name)
-                vst_class = getattr(module, class_name)
-                self.vsts[vst_type] = vst_class(params)
-                print(f"✅ VST Loaded: {vst_type} ({class_name})")
-            except Exception as e:
-                print(f"❌ Failed to load {vst_type}: {e}")
-
-    def on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
-            print(f"🌐 Connected to Hub ({BROKER_ADDR}) as {SYS_ID}")
-            client.subscribe(f"wildlink/{SYS_ID}/cmd")
-        else:
-            print(f"❌ Connection failed with code {rc}")
+    def on_connect(self, client, userdata, flags, rc, properties):
+        print(f"[log_msg] Connected to Broker: {self.broker}")
+        self.client.subscribe(f"{self.base_topic}/cmd/#")
+        self.sys_status = "running"
 
     def on_message(self, client, userdata, msg):
         try:
+            target = msg.topic.split('/')[-1]
             payload = json.loads(msg.payload.decode())
-            cmd_id = payload.get("cmd_id")
             
-            # 1. Ack
-            if cmd_id:
-                self.client.publish(f"wildlink/{SYS_ID}/res", json.dumps({
-                    "cmd_id": cmd_id, "val_status": "ack", "sys_time": datetime.now().isoformat()
-                }))
-
-            # 2. Command Execution
-            results = {}
-            for target_vst, cmd_data in payload.items():
-                if target_vst in self.vsts:
-                    res = self.vsts[target_vst].update(cmd_data)
-                    results[target_vst] = res
-            
-            # 3. Success Report
-            if results:
-                if cmd_id:
-                    results["cmd_id"] = cmd_id
-                    results["val_status"] = "success"
-                self.client.publish(f"wildlink/{SYS_ID}/res", json.dumps(results))
+            # B案: 全てのカメラ命令は 'cam' トピックで受け取り、hw_targetで振り分け
+            if target == "cam":
+                self.vst_cam_pi.control(payload)
+                self.vst_cam_usb.control(payload)
+                
         except Exception as e:
-            print(f"❌ Msg Error: {e}")
+            print(f"[log_code] MQTT Error: {e}")
+
+    def report_status(self):
+        """定期報告に log_code (エラー内容) を含める"""
+        status = {
+            "sys_status": self.sys_status,
+            "cam_pi": {
+                "val_status": self.vst_cam_pi.val_status,
+                "log_msg": self.vst_cam_pi.log_msg,
+                "log_code": self.vst_cam_pi.log_code
+            },
+            "cam_usb": {
+                "val_status": self.vst_cam_usb.val_status,
+                "log_msg": self.vst_cam_usb.log_msg,
+                "log_code": self.vst_cam_usb.log_code
+            }
+        }
+        self.client.publish(f"{self.base_topic}/state/sys", json.dumps(status))
 
     def run(self):
+        self.client.connect(self.broker, 1883, 60)
+        self.client.loop_start()
         try:
-            print(f"📡 Attempting to connect to {BROKER_ADDR}...")
-            self.client.connect(BROKER_ADDR, 1883, 60)
-            self.client.loop_start()
-
             while True:
-                combined_report = {}
-                for name, vst in self.vsts.items():
-                    combined_report[name] = vst.update()
-                self.client.publish(f"wildlink/{SYS_ID}/res", json.dumps(combined_report))
+                self.report_status()
                 time.sleep(10)
-        except Exception as e:
-            print(f"🔥 Runtime Error: {e}")
-        finally:
-            self.client.disconnect()
+        except KeyboardInterrupt:
+            self.vst_cam_pi.stop_streaming()
+            self.vst_cam_usb.stop_streaming()
+            self.client.loop_stop()
 
 if __name__ == "__main__":
-    manager = WildLinkMainManager()
-    
-    # ここも本来は起動時に一度Hubへ問い合わせるのが理想ですが、一旦テスト用
-    initial_config = [
-        {"vst_type": "camera", "vst_module": "vst_camera", "vst_class": "VSTCamera", "val_params": "{}"},
-        {"vst_type": "sys_monitor", "vst_module": "vst_sys_monitor", "vst_class": "VSTSysMonitor", "val_params": "{}"}
-    ]
-    
-    manager.load_vsts_from_config(initial_config)
+    manager = MainManager()
     manager.run()
