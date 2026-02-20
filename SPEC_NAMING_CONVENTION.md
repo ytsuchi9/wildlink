@@ -26,7 +26,7 @@ db_config.php: PHPからのDB接続を一元管理（一つ上の .env を参照
 main_manager.py: Node側のメイン。MQTTで cmd_type を受け取り各VSTへ振り分け。
 
 4. データベースの構造
-SHOW TABLEs;
+MariaDB [wildlink_db]> SHOW TABLES;
 +-----------------------+
 | Tables_in_wildlink_db |
 +-----------------------+
@@ -38,7 +38,7 @@ SHOW TABLEs;
 | system_logs           |
 +-----------------------+
 
-SHOW COLUMNS FROM device_catalog;
+MariaDB [wildlink_db]> SHOW COLUMNS FROM device_catalog;
 +----------------+--------------+------+-----+---------+-------+
 | Field          | Type         | Null | Key | Default | Extra |
 +----------------+--------------+------+-----+---------+-------+
@@ -49,7 +49,7 @@ SHOW COLUMNS FROM device_catalog;
 | log_note       | text         | YES  |     | NULL    |       |
 +----------------+--------------+------+-----+---------+-------+
 
-SHOW COLUMNS FROM node_commands;
+MariaDB [wildlink_db]> SHOW COLUMNS FROM node_commands;
 +--------------+--------------+------+-----+----------------------+----------------+
 | Field        | Type         | Null | Key | Default              | Extra          |
 +--------------+--------------+------+-----+----------------------+----------------+
@@ -65,7 +65,7 @@ SHOW COLUMNS FROM node_commands;
 | completed_at | timestamp(3) | YES  |     | NULL                 |                |
 +--------------+--------------+------+-----+----------------------+----------------+
 
-SHOW COLUMNS FROM node_configs;
+MariaDB [wildlink_db]> SHOW COLUMNS FROM node_configs;
 +-------------+-------------+------+-----+---------+----------------+
 | Field       | Type        | Null | Key | Default | Extra          |
 +-------------+-------------+------+-----+---------+----------------+
@@ -76,7 +76,7 @@ SHOW COLUMNS FROM node_configs;
 | val_enabled | tinyint(1)  | YES  |     | 1       |                |
 +-------------+-------------+------+-----+---------+----------------+
 
-SHOW COLUMNS FROM node_data;
+MariaDB [wildlink_db]> SHOW COLUMNS FROM node_data;
 +------------+-------------+------+-----+---------------------+----------------+
 | Field      | Type        | Null | Key | Default             | Extra          |
 +------------+-------------+------+-----+---------------------+----------------+
@@ -93,7 +93,7 @@ SHOW COLUMNS FROM node_data;
 | created_at | timestamp   | YES  |     | current_timestamp() |                |
 +------------+-------------+------+-----+---------------------+----------------+
 
-SHOW COLUMNS FROM nodes;
+MariaDB [wildlink_db]> SHOW COLUMNS FROM nodes;
 +---------------+---------------+------+-----+---------------------+-------------------------------+
 | Field         | Type          | Null | Key | Default             | Extra                         |
 +---------------+---------------+------+-----+---------------------+-------------------------------+
@@ -110,7 +110,7 @@ SHOW COLUMNS FROM nodes;
 | last_seen     | timestamp     | YES  |     | current_timestamp() | on update current_timestamp() |
 +---------------+---------------+------+-----+---------------------+-------------------------------+
 
-SHOW COLUMNS FROM system_logs;
+MariaDB [wildlink_db]> SHOW COLUMNS FROM system_logs;
 +------------+-------------+------+-----+---------------------+----------------+
 | Field      | Type        | Null | Key | Default             | Extra          |
 +------------+-------------+------+-----+---------------------+----------------+
