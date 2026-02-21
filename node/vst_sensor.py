@@ -1,36 +1,56 @@
-import os
-import smbus2
-import bme280  # pip3 install RPi.bme280 でインストール可能
+import time
+from datetime import datetime
+from gpiozero import MotionSensor
 
-def get_data(configs):
-    try:
-        # --- 1. CPU温度 (sys_cpu_t) ---
-        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
-            cpu_temp = int(f.read()) / 1000.0
-
-        # --- 2. BMP280 (env_temp, env_pres) ---
-        # I2Cの設定
-        port = 1
-        address = 0x76  # さきほど確認したアドレス
-        bus = smbus2.SMBus(port)
-        calibration_params = bme280.load_calibration_params(bus, address)
+class VST_Sensor:
+    def __init__(self, role, params, mqtt):
+        self.role = role
+        self.params = params
+        self.mqtt = mqtt
         
-        # 測定
-        data = bme280.sample(bus, address, calibration_params)
+        # ドライバーの選択
+        driver_type = params.get('hw_driver', 'SR501')
+        self.device = GenericPIR(params)
+
+        self.last_detect_time = 0
+        self.interval = params.get('val_interval', 5)
+
+    def poll(self):
+        if self.device and self.device.is_detected():
+            current_time = time.time()
+            if current_time - self.last_detect_time > self.interval:
+                self.on_detect()
+                self.last_detect_time = current_time
+
+    def on_detect(self):
+        now_str = datetime.now().isoformat()
+        topic = f"node/status/{self.role}"
         
-        # --- 3. データのパッキング ---
-        payload = {
-            "sys_cpu_t": cpu_temp,
-            "env_temp": round(data.temperature, 2),
-            "env_pres": round(data.pressure, 2),
-            "env_hum": round(data.humidity, 2)  # BMP280なら0、BMEなら湿度が入る
-        }
+        if self.mqtt:
+            payload = {
+                "vst_type": self.role,
+                "val_status": "detected",
+                "env_time": now_str
+            }
+            # mqtt_client側でjson.dumpsしてくれるので、そのまま渡す
+            self.mqtt.publish(topic, payload)
+            print(f"📡 Sent motion to {topic}")
 
-        return True, payload
+# --- シンプルな gpiozero ドライバー ---
 
-    except Exception as e:
-        return False, {"log_code": 202, "log_msg": str(e)}
-
-if __name__ == "__main__":
-    # 単体テスト用
-    print(get_data({}))
+class GenericPIR:
+    def __init__(self, params):
+        self.pin = params.get('hw_pin', 4)
+        try:
+            # pin_factoryを指定せず、標準の仕組み（RPi.GPIOなど）を使用
+            # queue_len=1 にすることで、検知のタイムラグを最小限にします
+            self.sensor = MotionSensor(self.pin, pull_up=False, queue_len=1)
+            print(f"✅ GenericPIR initialized on Pin {self.pin} (Standard mode)")
+        except Exception as e:
+            print(f"❌ Failed to initialize GenericPIR: {e}")
+            self.sensor = None
+        
+    def is_detected(self):
+        if self.sensor:
+            return self.sensor.motion_detected
+        return False

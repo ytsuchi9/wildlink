@@ -1,14 +1,14 @@
 import mysql.connector
 import os
+import json # 追加
 from dotenv import load_dotenv
 from datetime import datetime
 
 class DBBridge:
     def __init__(self, dotenv_path=None):
-        # 1. パス解決: hub_managerから呼ばれた際、共通の.envを確実に探す
+        # 1. パス解決: 既存ロジック維持
         if dotenv_path is None:
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            # /opt/wildlink/common -> /opt/wildlink/.env
             dotenv_path = os.path.join(os.path.dirname(current_dir), ".env")
         
         load_dotenv(dotenv_path)
@@ -23,6 +23,7 @@ class DBBridge:
              print(f"[DBBridge] ⚠️ WARNING: Host is None. Path: {dotenv_path}")
 
     def _get_connection(self):
+        # 既存ロジック維持
         if not self.host:
             raise ValueError("DBBridge Error: Host is not defined. Check .env path.")
         return mysql.connector.connect(
@@ -34,20 +35,16 @@ class DBBridge:
         )
 
     def update_node_status(self, node_id, payload):
-        """
-        Hub Managerが受信したレスポンスをDBに反映する (新規追加)
-        """
+        # 既存のコマンド更新ロジック（そのまま維持）
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
             now = datetime.now()
 
-            # 1. node_commands のタイムスタンプ更新
             if "cmd_id" in payload:
                 cmd_id = payload["cmd_id"]
                 val_status = payload.get("val_status", "success")
                 
-                # 最初の返信ならacked_at、完了ならcompleted_atを埋める
                 sql = """
                     UPDATE node_commands 
                     SET val_status = %s, 
@@ -56,9 +53,6 @@ class DBBridge:
                     WHERE id = %s
                 """
                 cursor.execute(sql, (val_status, now, val_status, now, cmd_id))
-
-            # 2. 必要に応じて node_status テーブル等に最新の env_ や sys_ を保存する
-            # (将来的な肉付けポイント)
 
             conn.commit()
             cursor.close()
@@ -69,13 +63,13 @@ class DBBridge:
             return False
 
     def fetch_node_config(self, node_id):
-        """ノードの構成情報を取得する"""
+        """ノードの構成情報を取得し、JSONを辞書にパースして返す"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True)
-            # 仕様書の sys_id 命名に合わせて検索
+            # JOIN済みのクエリ
             query = """
-                SELECT c.vst_type, c.val_params, cat.vst_class, cat.vst_module
+                SELECT c.vst_type, c.val_params, c.val_enabled, cat.vst_class, cat.vst_module
                 FROM node_configs c
                 JOIN device_catalog cat ON c.vst_type = cat.vst_type
                 WHERE c.sys_id = %s AND c.val_enabled = TRUE
@@ -84,13 +78,22 @@ class DBBridge:
             configs = cursor.fetchall()
             cursor.close()
             conn.close()
+
+            # ここで val_params を JSON文字列から Python辞書に変換しておく
+            for cfg in configs:
+                if cfg['val_params'] and isinstance(cfg['val_params'], str):
+                    try:
+                        cfg['val_params'] = json.loads(cfg['val_params'])
+                    except json.JSONDecodeError:
+                        print(f"[DBBridge] ⚠️ JSON Decode Error for {cfg['vst_type']}")
+            
             return configs
         except Exception as e:
             print(f"[DBBridge] Fetch Error: {e}")
             return None
 
     def save_log(self, sql, params):
-        """ログを保存する"""
+        # 既存ロジック維持
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
