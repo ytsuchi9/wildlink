@@ -23,17 +23,16 @@ class VST_Sensor:
                 self.last_detect_time = current_time
 
     def on_detect(self):
+        # 1. 以前と同じくMQTTへPublish
         now_str = datetime.now().isoformat()
         topic = f"node/status/{self.role}"
-        
         if self.mqtt:
-            payload = {
-                "vst_type": self.role,
-                "val_status": "detected",
-                "env_time": now_str
-            }
-            # mqtt_client側でjson.dumpsしてくれるので、そのまま渡す
+            payload = {"vst_type": self.role, "val_status": "detected", "env_time": now_str}
             self.mqtt.publish(topic, payload)
+
+        # 2. ★Managerへ「検知したよ！」と報告する (これが抜けているかも)
+        if hasattr(self, 'manager') and self.manager:
+            self.manager.on_event(self.role, "motion_detected")
             print(f"📡 Sent motion to {topic}")
 
 # --- シンプルな gpiozero ドライバー ---

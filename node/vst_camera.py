@@ -6,60 +6,62 @@ import time
 import fcntl
 import threading
 
-# --- パス解決 ---
-current_dir = os.path.dirname(os.path.abspath(__file__))
-wildlink_root = os.path.dirname(current_dir)
-common_path = os.path.join(wildlink_root, "common")
-if common_path not in sys.path:
-    sys.path.append(common_path)
-
-from wmp_core import WMPHeader
-
-class VSTCamera:
-    def __init__(self, cam_type="pi", node_id="node_001"):
-        self.hw_type = cam_type
-        self.hw_device = "/dev/video0" if cam_type == "usb" else None
-        self.node_id = node_id
+class VST_Camera:
+    def __init__(self, role, params, mqtt):
+        self.role = role          # DBの vst_type (cam_main, cam_sub 等)
+        self.params = params      # DBの val_params
+        self.mqtt = mqtt          # MainManager共通のMQTTクライアント
         
+        # --- DB設定の反映 ---
+        # 役割名からデバイスを判断
+        if self.role == "cam_main":
+            self.hw_type = "pi"
+            self.hw_device = None
+        else:
+            self.hw_type = "usb"
+            self.hw_device = "/dev/video0" 
+
+        self.val_res = params.get("val_res", "320x240")
+        self.val_fps = params.get("val_fps", 5)
         self.val_status = "idle"
-        self.val_res = "320x240"
-        self.val_fps = 5
-        self.log_msg = ""
-        self.log_code = ""
+        
+        # --- 配信・ネットワーク関連 ---
+        # wmp_core が common フォルダにある前提のパス解決は済んでいるものとします
+        from common.wmp_core import WMPHeader
+        self.wmp = WMPHeader(node_id="node_001", media_type=2)
         
         self.process = None
         self.stop_event = threading.Event()
         self.thread = None
-        self.wmp = WMPHeader(node_id=self.node_id, media_type=2)
+
+    def poll(self):
+        """
+        MainManagerのループから毎秒呼ばれる。
+        将来的に、ここでカメラの生存確認や
+        MQTTからの「配信停止命令」をチェックするロジックを入れることができます。
+        """
+        pass
 
     def control(self, payload):
-            """MainManagerから呼ばれる制御窓口"""
-            # ターゲットチェックを外すか、ログを出して確認するように変更
-            # print(f"DEBUG: {self.hw_type} received command for {payload.get('hw_target')}")
-
-            if "val_res" in payload: self.val_res = payload["val_res"]
-            if "val_fps" in payload: self.val_fps = payload["val_fps"]
-            
-            if "act_run" in payload:
-                if payload["act_run"]:
-                    # Pi2(Hub)のIPを環境変数やデフォルトから取得
-                    target_ip = payload.get("net_ip", "192.168.1.102") 
-                    
-                    # ポート出し分け（pi: 5005, usb: 5006）
-                    default_port = 5005 if self.hw_type == "pi" else 5006
-                    target_port = payload.get("net_port", default_port)
-                    
-                    print(f"[*] Starting {self.hw_type} stream to {target_ip}:{target_port}")
-                    self.start_streaming(target_ip, target_port)
-                else:
-                    print(f"[*] Stopping {self.hw_type} stream")
-                    self.stop_streaming()
+        """
+        MQTT経由などで外部から「開始/停止」を命じられた時の窓口
+        """
+        if "act_run" in payload:
+            if payload["act_run"]:
+                target_ip = payload.get("net_ip", "192.168.1.102") 
+                default_port = 5005 if self.hw_type == "pi" else 5006
+                target_port = payload.get("net_port", default_port)
+                self.start_streaming(target_ip, target_port)
+            else:
+                self.stop_streaming()
 
     def _streaming_loop(self, dest_ip, port):
-        """配信スレッドの実体"""
+        print(f"DEBUG: Executing command for {self.hw_type}...") # これを追加
+        """(昨日いただいた配信ロジック本体)"""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         dest_addr = (dest_ip, port)
         
+        # コマンド生成
         if self.hw_type == "pi":
             width, height = self.val_res.split('x')
             cmd = [
@@ -67,21 +69,17 @@ class VSTCamera:
                 "--width", width, "--height", height,
                 "--framerate", str(self.val_fps),
                 "--codec", "mjpeg", "--flush", "--denoise", "cdn_off",
+                "--shutter", "20000", "--awbgains", "1.5,1.5", # ★ 露出とWBを固定（初期化をスキップ）
                 "-o", "-"
             ]
         else:
-            # USBカメラ: 少し汎用的な設定に戻す
             cmd = [
-                "ffmpeg", "-y",
-                "-f", "v4l2",
-                "-i", self.hw_device,
+                "ffmpeg", "-y", "-f", "v4l2", "-i", self.hw_device,
                 "-vf", f"fps={self.val_fps},scale={self.val_res.replace('x', ':')}",
-                "-f", "mjpeg", 
-                "-q:v", "10", 
-                "-tune", "zerolatency", 
-                "-flush_packets", "1", # パケットを即座に流す
-                "pipe:1"
+                "-f", "mjpeg", "-q:v", "10", "-tune", "zerolatency", 
+                "-flush_packets", "1", "pipe:1"
             ]
+            print(f"DEBUG: Full Command: {' '.join(cmd)}") # これも追加
 
         self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
@@ -92,15 +90,9 @@ class VSTCamera:
             fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
         buffer = b""
-        self.log_msg = f"Started: {self.hw_type} -> {dest_ip}:{port}"
+        print(f"✅ [{self.role}] Streaming started to {dest_ip}:{port}")
 
         while not self.stop_event.is_set():
-            # エラーログ取得
-            try:
-                err = self.process.stderr.read(1024)
-                if err: self.log_code = err.decode()[-200:]
-            except: pass
-
             # 映像データ取得
             try:
                 while True:
@@ -109,12 +101,13 @@ class VSTCamera:
                     buffer += chunk
             except: pass
 
-            # フレーム切り出し
+            # フレーム切り出し (MJPEG)
             a = buffer.rfind(b'\xff\xd8')
             b = buffer.find(b'\xff\xd9', a)
             
             if a != -1 and b != -1:
                 frame = buffer[a:b+2]
+                # WMPパケットとして送信
                 self.wmp.send_large_data(sock, dest_addr, frame, flags=1)
                 buffer = buffer[b+2:]
                 time.sleep(1.0 / self.val_fps * 0.5) 
@@ -125,12 +118,10 @@ class VSTCamera:
             self.process.terminate()
             self.process.wait()
         sock.close()
+        print(f"🛑 [{self.role}] Streaming stopped.")
 
     def start_streaming(self, dest_ip, port):
-        """ストリーミング開始"""
         if self.val_status == "streaming": return
-        if not dest_ip: return
-
         self.stop_event.clear()
         self.thread = threading.Thread(target=self._streaming_loop, args=(dest_ip, port))
         self.thread.daemon = True
@@ -138,9 +129,7 @@ class VSTCamera:
         self.val_status = "streaming"
 
     def stop_streaming(self):
-        """ストリーミング停止"""
         self.stop_event.set()
         if self.thread:
             self.thread.join(timeout=1)
         self.val_status = "idle"
-        self.log_msg = "Stopped"
