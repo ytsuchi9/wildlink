@@ -26,6 +26,8 @@ class MainManager:
         self.db = DBBridge()
         self.units = {}
         self.mqtt = None
+        self.last_heartbeat = 0
+        self.heartbeat_interval = 30 # 30秒ごと
         
         # MQTTの初期化
         try:
@@ -40,6 +42,31 @@ class MainManager:
         except Exception as e:
             print(f"⚠️ MQTT Initialization failed: {e}")
 
+    def sync_local_config(self):
+        """DBから設定を読み取り、ローカルのJSONファイルと同期・保存する"""
+        local_path = os.path.join(project_root, "local_config.json")
+        
+        # 1. DBから最新の設定を取得
+        remote_configs = self.db.fetch_node_config(self.node_id)
+        
+        if remote_configs:
+            print(f"🔄 [Sync] Fetched config from DB. Saving to {local_path}...")
+            # 2. ローカルに保存 (キャッシュ)
+            try:
+                with open(local_path, "w") as f:
+                    json.dump(remote_configs, f, indent=4, default=str)
+                return remote_configs
+            except Exception as e:
+                print(f"❌ [Sync] Failed to save local config: {e}")
+                return remote_configs
+        else:
+            # 3. オフライン時はローカルから読み込み
+            if os.path.exists(local_path):
+                print(f"⚠️ [Sync] Offline mode. Loading from local cache...")
+                with open(local_path, "r") as f:
+                    return json.load(f)
+            return None
+
     def setup_subscription(self):
         """MQTTの命令待ち受けトピックを登録"""
         cmd_topic = f"node/cmd/{self.node_id}"
@@ -48,23 +75,29 @@ class MainManager:
         print(f"📥 Subscribed to {cmd_topic}")
 
     def on_mqtt_message(self, client, userdata, msg):
-        """外部からのMQTT命令を各ユニットに振り分ける"""
+        """外部からのMQTT命令を各ユニットに振り分け + Ack更新"""
         try:
             payload = json.loads(msg.payload.decode())
             target = payload.get("target")
-            print(f"📩 MQTT Command for {target}: {payload}") # ターゲットを表示
+            cmd_id = payload.get("cmd_id") # DB側で発行されたコマンドIDを想定
+
+            # 1. Ack更新 (受け取ったよ)
+            if cmd_id:
+                self.db.update_command_status(cmd_id, status="acked")
 
             if target in self.units:
-                print(f"🎯 Calling control() on {target}") # 呼び出し確認
                 self.units[target].control(payload)
-            else:
-                print(f"⚠️ Target unit '{target}' not found.")
+                
+                # 2. Complete更新 (実行完了したよ)
+                if cmd_id:
+                    self.db.update_command_status(cmd_id, status="completed")
+            
         except Exception as e:
             print(f"❌ MQTT Message Error: {e}")
 
     def setup(self):
         """DBから設定を読み込みユニットを生成"""
-        configs = self.db.fetch_node_config(self.node_id)
+        configs = self.sync_local_config()
         if not configs:
             print(f"⚠️ No config found for {self.node_id}.")
             return
@@ -91,18 +124,47 @@ class MainManager:
         """ユニット内部からのイベント通知（センサー検知など）"""
         print(f"🔔 Event: {source_role} -> {event_type}")
         
-        # 連動ロジック: sns_move が反応したら cam_main を開始
-        if source_role == "sns_move" and event_type == "motion_detected":
-            if "cam_main" in self.units:
-                print("🎥 Motion detected! Starting cam_main for 30s...")
-                self.units["cam_main"].control({"act_run": True})
-                # 30秒後に停止するタイマー
-                threading.Timer(30, self.units["cam_main"].control, args=[{"act_run": False}]).start()
+        # 1. イベント発生源のユニットを取得
+        source_unit = self.units.get(source_role)
+        if not source_unit:
+            return
+
+        # 2. センサー検知時の連動ロジック
+        if event_type == "motion_detected":
+            # DBの val_params からターゲットを取得（未設定なら cam_main をデフォルトに）
+            target_role = source_unit.params.get("act_target", "cam_main")
+            # 停止までの時間を取得（デフォルト30秒）
+            duration = source_unit.params.get("val_interval", 30)
+
+            if target_role in self.units:
+                print(f"🎥 Motion detected! Starting {target_role} for {duration}s...")
+                
+                # ターゲットのカメラを起動
+                self.units[target_role].control({"act_run": True})
+                
+                # 指定秒後に停止するタイマー
+                threading.Timer(
+                    duration, 
+                    self.units[target_role].control, 
+                    args=[{"act_run": False}]
+                ).start()
+            else:
+                print(f"⚠️ Target unit '{target_role}' not found.")
+
+    def send_heartbeat(self):
+        """DBの生存状態を更新"""
+        now = time.time()
+        if now - self.last_heartbeat > self.heartbeat_interval:
+            print("💓 Heartbeat: Updating node status...")
+            # nodesテーブルの last_seen を現在時刻に、statusをonlineに
+            self.db.update_node_heartbeat(self.node_id, status="online")
+            self.last_heartbeat = now
 
     def run(self):
         print(f"🚀 Node {self.node_id} 稼働開始...")
         try:
             while True:
+                self.send_heartbeat() # ★ここを追加
                 for unit in self.units.values():
                     if hasattr(unit, 'poll'):
                         unit.poll()

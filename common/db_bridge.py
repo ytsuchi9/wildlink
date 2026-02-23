@@ -105,3 +105,31 @@ class DBBridge:
         except Exception as e:
             print(f"[DBBridge] Save Error: {e}")
             return False
+
+    def _execute(self, sql, params=None):
+        """UPDATE/INSERT/DELETE などの実行用汎用メソッド"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(sql, params or ())
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"[DBBridge] Execute Error: {e}")
+            return False
+
+    # --- 私が追加をお願いしたメソッドの「execute_query」を「_execute」に書き換え ---
+
+    def update_node_heartbeat(self, sys_id, status="online"):
+        query = "UPDATE nodes SET sys_status = %s, last_seen = NOW() WHERE sys_id = %s"
+        # self.execute_query ではなく self._execute を使う
+        return self._execute(query, (status, sys_id))
+
+    def update_command_status(self, cmd_id, status="acked"):
+        # node_commandsテーブルの主キーが id なのか command_id なのかは要確認
+        # update_node_statusメソッド内では WHERE id = %s となっています
+        column = "acked_at" if status == "acked" else "completed_at"
+        query = f"UPDATE node_commands SET {column} = NOW() WHERE id = %s"
+        return self._execute(query, (cmd_id,))

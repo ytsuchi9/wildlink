@@ -8,60 +8,53 @@ import threading
 
 class VST_Camera:
     def __init__(self, role, params, mqtt):
-        self.role = role          # DBの vst_type (cam_main, cam_sub 等)
-        self.params = params      # DBの val_params
-        self.mqtt = mqtt          # MainManager共通のMQTTクライアント
+        self.role = role
+        self.params = params
+        self.mqtt = mqtt
         
-        # --- DB設定の反映 ---
-        # 役割名からデバイスを判断
+        # デバイス設定
         if self.role == "cam_main":
             self.hw_type = "pi"
             self.hw_device = None
         else:
             self.hw_type = "usb"
-            self.hw_device = "/dev/video0" 
+            self.hw_device = "/dev/video0"
 
         self.val_res = params.get("val_res", "320x240")
         self.val_fps = params.get("val_fps", 5)
         self.val_status = "idle"
         
-        # --- 配信・ネットワーク関連 ---
-        # wmp_core が common フォルダにある前提のパス解決は済んでいるものとします
         from common.wmp_core import WMPHeader
         self.wmp = WMPHeader(node_id="node_001", media_type=2)
         
+        self.gate_open = False  # 映像を流すかどうかの門
         self.process = None
         self.stop_event = threading.Event()
-        self.thread = None
+        
+        # 起動時にプロセスを立ち上げてしまう
+        self.start_camera_process()
 
-    def poll(self):
-        """
-        MainManagerのループから毎秒呼ばれる。
-        将来的に、ここでカメラの生存確認や
-        MQTTからの「配信停止命令」をチェックするロジックを入れることができます。
-        """
-        pass
+    def start_camera_process(self):
+        """カメラプロセスを裏で回し始める"""
+        print(f"🎬 [{self.role}] Pre-starting camera process...")
+        self.thread = threading.Thread(target=self._streaming_loop)
+        self.thread.daemon = True
+        self.thread.start()
 
     def control(self, payload):
-        """
-        MQTT経由などで外部から「開始/停止」を命じられた時の窓口
-        """
+        """配信のON/OFF（門の開閉）だけを制御"""
         if "act_run" in payload:
-            if payload["act_run"]:
-                target_ip = payload.get("net_ip", "192.168.1.102") 
-                default_port = 5005 if self.hw_type == "pi" else 5006
-                target_port = payload.get("net_port", default_port)
-                self.start_streaming(target_ip, target_port)
-            else:
-                self.stop_streaming()
+            self.gate_open = payload["act_run"]
+            self.val_status = "streaming" if self.gate_open else "idle"
+            status_label = "OPEN" if self.gate_open else "CLOSED"
+            print(f"📽️ [{self.role}] Stream Gate: {status_label}")
 
-    def _streaming_loop(self, dest_ip, port):
-        print(f"DEBUG: Executing command for {self.hw_type}...") # これを追加
-        """(昨日いただいた配信ロジック本体)"""
+    def _streaming_loop(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        dest_addr = (dest_ip, port)
+        # 本来はpayloadで受け取るが、常時起動のためデフォルトのHubを指定
+        dest_addr = ("192.168.1.102", 5005 if self.hw_type == "pi" else 5006)
         
-        # コマンド生成
+        # コマンド生成（初期化ラグを減らすため露出固定などを追加）
         if self.hw_type == "pi":
             width, height = self.val_res.split('x')
             cmd = [
@@ -69,17 +62,22 @@ class VST_Camera:
                 "--width", width, "--height", height,
                 "--framerate", str(self.val_fps),
                 "--codec", "mjpeg", "--flush", "--denoise", "cdn_off",
-                "--shutter", "20000", "--awbgains", "1.5,1.5", # ★ 露出とWBを固定（初期化をスキップ）
+                "--shutter", "20000", "--awbgains", "1.5,1.5", 
                 "-o", "-"
             ]
         else:
             cmd = [
-                "ffmpeg", "-y", "-f", "v4l2", "-i", self.hw_device,
-                "-vf", f"fps={self.val_fps},scale={self.val_res.replace('x', ':')}",
-                "-f", "mjpeg", "-q:v", "10", "-tune", "zerolatency", 
-                "-flush_packets", "1", "pipe:1"
+                "ffmpeg", "-y", 
+                "-f", "v4l2", 
+                "-input_format", "mjpeg", # ★ カメラがMJPEG対応なら直接受ける
+                "-video_size", self.val_res,
+                "-framerate", str(self.val_fps),
+                "-i", self.hw_device,
+                "-c:v", "copy",           # ★ 再エンコードせずそのまま流す（CPU負荷激減）
+                "-f", "mjpeg", 
+                "-an",                    # 音声なし
+                "pipe:1"
             ]
-            print(f"DEBUG: Full Command: {' '.join(cmd)}") # これも追加
 
         self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
@@ -90,10 +88,9 @@ class VST_Camera:
             fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
         buffer = b""
-        print(f"✅ [{self.role}] Streaming started to {dest_ip}:{port}")
 
         while not self.stop_event.is_set():
-            # 映像データ取得
+            # 映像データ読み込み（常にバッファを空にするために読み続ける）
             try:
                 while True:
                     chunk = self.process.stdout.read(16384)
@@ -101,14 +98,17 @@ class VST_Camera:
                     buffer += chunk
             except: pass
 
-            # フレーム切り出し (MJPEG)
+            # MJPEGフレーム切り出し
             a = buffer.rfind(b'\xff\xd8')
             b = buffer.find(b'\xff\xd9', a)
             
             if a != -1 and b != -1:
                 frame = buffer[a:b+2]
-                # WMPパケットとして送信
-                self.wmp.send_large_data(sock, dest_addr, frame, flags=1)
+                
+                # ★ ここが重要：門が開いている時だけ送信する
+                if self.gate_open:
+                    self.wmp.send_large_data(sock, dest_addr, frame, flags=1)
+                
                 buffer = buffer[b+2:]
                 time.sleep(1.0 / self.val_fps * 0.5) 
             else:
@@ -116,20 +116,4 @@ class VST_Camera:
 
         if self.process:
             self.process.terminate()
-            self.process.wait()
         sock.close()
-        print(f"🛑 [{self.role}] Streaming stopped.")
-
-    def start_streaming(self, dest_ip, port):
-        if self.val_status == "streaming": return
-        self.stop_event.clear()
-        self.thread = threading.Thread(target=self._streaming_loop, args=(dest_ip, port))
-        self.thread.daemon = True
-        self.thread.start()
-        self.val_status = "streaming"
-
-    def stop_streaming(self):
-        self.stop_event.set()
-        if self.thread:
-            self.thread.join(timeout=1)
-        self.val_status = "idle"
