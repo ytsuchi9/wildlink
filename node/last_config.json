@@ -1,0 +1,45 @@
+[
+    {
+        "vst_type": "cam_main",
+        "val_params": {
+            "val_res": "320x240",
+            "val_fps": 5
+        },
+        "val_enabled": 1,
+        "vst_class": "Camera",
+        "vst_module": "vst_camera"
+    },
+    {
+        "vst_type": "cam_sub",
+        "val_params": {
+            "val_res": "320x240",
+            "val_fps": 5
+        },
+        "val_enabled": 1,
+        "vst_class": "Camera",
+        "vst_module": "vst_camera"
+    },
+    {
+        "vst_type": "sns_move",
+        "val_params": {
+            "hw_pin": 18,
+            "val_interval": 15,
+            "act_target": "cam_sub",
+            "act_line": true
+        },
+        "val_enabled": 1,
+        "vst_class": "Sensor",
+        "vst_module": "vst_sensor"
+    },
+    {
+        "vst_type": "sw_stream",
+        "val_params": {
+            "hw_pin": 27,
+            "act_target": "cam_main",
+            "val_interval": 15
+        },
+        "val_enabled": 1,
+        "vst_class": "Switch",
+        "vst_module": "vst_switch"
+    }
+]

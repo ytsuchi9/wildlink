@@ -7,12 +7,11 @@ import fcntl
 import threading
 
 class VST_Camera:
-    def __init__(self, role, params, mqtt):
+    def __init__(self, role, params, mqtt, on_event=None):
         self.role = role
         self.params = params
         self.mqtt = mqtt
         
-        # デバイス設定
         if self.role == "cam_main":
             self.hw_type = "pi"
             self.hw_device = None
@@ -27,22 +26,31 @@ class VST_Camera:
         from common.wmp_core import WMPHeader
         self.wmp = WMPHeader(node_id="node_001", media_type=2)
         
-        self.gate_open = False  # 映像を流すかどうかの門
+        self.gate_open = False
         self.process = None
         self.stop_event = threading.Event()
         
-        # 起動時にプロセスを立ち上げてしまう
         self.start_camera_process()
 
     def start_camera_process(self):
-        """カメラプロセスを裏で回し始める"""
         print(f"🎬 [{self.role}] Pre-starting camera process...")
         self.thread = threading.Thread(target=self._streaming_loop)
         self.thread.daemon = True
         self.thread.start()
 
+    def stop(self):
+        """リロード時に呼び出され、全てを綺麗に片付ける"""
+        print(f"♻️ [{self.role}] Stopping camera thread and process...")
+        self.stop_event.set() # ループを止める
+        if self.process:
+            self.process.terminate() # ffmpegを終了
+            try:
+                self.process.wait(timeout=2)
+            except:
+                self.process.kill() # 頑固な場合は殺す
+        print(f"✅ [{self.role}] Stopped.")
+
     def control(self, payload):
-        """配信のON/OFF（門の開閉）だけを制御"""
         if "act_run" in payload:
             self.gate_open = payload["act_run"]
             self.val_status = "streaming" if self.gate_open else "idle"
@@ -51,10 +59,8 @@ class VST_Camera:
 
     def _streaming_loop(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # 本来はpayloadで受け取るが、常時起動のためデフォルトのHubを指定
         dest_addr = ("192.168.1.102", 5005 if self.hw_type == "pi" else 5006)
         
-        # コマンド生成（初期化ラグを減らすため露出固定などを追加）
         if self.hw_type == "pi":
             width, height = self.val_res.split('x')
             cmd = [
@@ -67,30 +73,20 @@ class VST_Camera:
             ]
         else:
             cmd = [
-                "ffmpeg", "-y", 
-                "-f", "v4l2", 
-                "-input_format", "mjpeg", # ★ カメラがMJPEG対応なら直接受ける
-                "-video_size", self.val_res,
-                "-framerate", str(self.val_fps),
-                "-i", self.hw_device,
-                "-c:v", "copy",           # ★ 再エンコードせずそのまま流す（CPU負荷激減）
-                "-f", "mjpeg", 
-                "-an",                    # 音声なし
-                "pipe:1"
+                "ffmpeg", "-y", "-f", "v4l2", "-input_format", "mjpeg",
+                "-video_size", self.val_res, "-framerate", str(self.val_fps),
+                "-i", self.hw_device, "-c:v", "copy", "-f", "mjpeg", "-an", "pipe:1"
             ]
 
         self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
-        # ノンブロッキング設定
         for p in [self.process.stdout, self.process.stderr]:
             fd = p.fileno()
             fl = fcntl.fcntl(fd, fcntl.F_GETFL)
             fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
         buffer = b""
-
         while not self.stop_event.is_set():
-            # 映像データ読み込み（常にバッファを空にするために読み続ける）
             try:
                 while True:
                     chunk = self.process.stdout.read(16384)
@@ -98,22 +94,19 @@ class VST_Camera:
                     buffer += chunk
             except: pass
 
-            # MJPEGフレーム切り出し
             a = buffer.rfind(b'\xff\xd8')
             b = buffer.find(b'\xff\xd9', a)
             
             if a != -1 and b != -1:
                 frame = buffer[a:b+2]
-                
-                # ★ ここが重要：門が開いている時だけ送信する
                 if self.gate_open:
                     self.wmp.send_large_data(sock, dest_addr, frame, flags=1)
-                
                 buffer = buffer[b+2:]
                 time.sleep(1.0 / self.val_fps * 0.5) 
             else:
                 time.sleep(0.001)
 
+        # ループを抜けた後の後始末
         if self.process:
             self.process.terminate()
         sock.close()
