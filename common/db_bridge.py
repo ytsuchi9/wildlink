@@ -118,8 +118,43 @@ class DBBridge:
         query = "UPDATE nodes SET sys_status = %s, last_seen = NOW() WHERE sys_id = %s"
         return self._execute(query, (status, sys_id))
 
-    def update_command_status(self, cmd_id, status="acked"):
-        """コマンドの受諾/完了時刻の更新"""
-        column = "acked_at" if status == "acked" else "completed_at"
-        query = f"UPDATE node_commands SET {column} = NOW() WHERE id = %s"
-        return self._execute(query, (cmd_id,))
+    def fetch_pending_commands(self, node_id=None):
+        """val_statusが 'pending' のコマンドを取得する"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # DBのカラム名 val_status に合わせる
+            query = "SELECT * FROM node_commands WHERE val_status = 'pending'"
+            params = []
+            if node_id:
+                query += " AND sys_id = %s" # カラム名が sys_id なので修正
+                params.append(node_id)
+            
+            cursor.execute(query, params)
+            result = cursor.fetchall()
+            
+            cursor.close()
+            conn.close()
+            return result
+        except Exception as e:
+            print(f"[DBBridge] fetch_pending_commands Error: {e}")
+            return []
+
+    def update_command_status(self, cmd_id, status):
+        """
+        コマンドのステータスと、各フェーズの時刻(sent_at, acked_at, completed_at)を更新する
+        """
+        # ステータスと更新カラムの判定
+        column_update = ""
+        if status == "sent":
+            column_update = ", sent_at = NOW(3)"
+        elif status == "acked":
+            column_update = ", acked_at = NOW(3)"
+        elif status == "completed":
+            column_update = ", completed_at = NOW(3)"
+
+        # カラム名を val_status に合わせる
+        query = f"UPDATE node_commands SET val_status = %s {column_update} WHERE id = %s"
+        
+        return self._execute(query, (status, cmd_id))

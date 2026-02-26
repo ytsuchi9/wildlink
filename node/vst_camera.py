@@ -41,13 +41,24 @@ class VST_Camera:
     def stop(self):
         """リロード時に呼び出され、全てを綺麗に片付ける"""
         print(f"♻️ [{self.role}] Stopping camera thread and process...")
-        self.stop_event.set() # ループを止める
+        self.stop_event.set() 
+        
         if self.process:
-            self.process.terminate() # ffmpegを終了
+            # 1. 丁寧に終了を促す
+            self.process.terminate()
             try:
-                self.process.wait(timeout=2)
-            except:
-                self.process.kill() # 頑固な場合は殺す
+                # 2. 完全に消えるのを最大3秒待つ（PiZeroでは重要）
+                self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                # 3. しぶとい場合は強制終了
+                print(f"⚠️ [{self.role}] Process hang detected. Killing...")
+                self.process.kill()
+                self.process.wait() # ゾンビプロセス化を防ぐ
+        
+        # 4. スレッドの合流を待つ（二重起動防止の要）
+        if hasattr(self, 'thread') and self.thread.is_alive():
+            self.thread.join(timeout=1)
+            
         print(f"✅ [{self.role}] Stopped.")
 
     def control(self, payload):
@@ -58,6 +69,9 @@ class VST_Camera:
             print(f"📽️ [{self.role}] Stream Gate: {status_label}")
 
     def _streaming_loop(self):
+        # --- 魔法のウェイト ---
+        # 前のインスタンスがデバイスを解放する時間を確保
+        time.sleep(0.5)
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         dest_addr = ("192.168.1.102", 5005 if self.hw_type == "pi" else 5006)
         

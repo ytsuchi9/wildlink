@@ -36,7 +36,7 @@
         "val_params": {
             "hw_pin": 27,
             "act_target": "cam_main",
-            "val_interval": 15
+            "val_interval": 10
         },
         "val_enabled": 1,
         "vst_class": "Switch",
