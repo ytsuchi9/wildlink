@@ -2,20 +2,34 @@
 // /var/www/html/send_cmd.php
 require_once 'db_config.php';
 
-// デバッグ用：何が届いたかログに残す
-file_put_contents('cmd_debug.log', print_r($_POST, true), FILE_APPEND);
+header('Content-Type: application/json');
 
-$node_id = $_POST['node_id'] ?? 'node_001';
-$cmd = $_POST['cmd'] ?? 'cam';
-$val = $_POST['val'] ?? '{}';
+// JS側から送られてくる値を取得
+$node_id  = $_POST['node_id'] ?? 'node_001';
+$cmd_type = $_POST['cmd_type'] ?? 'vst_control'; // 何の操作か
+$cmd_json = $_POST['cmd_json'] ?? '{}';         // 変更パッチ内容
 
-$topic = "vst/{$node_id}/cmd/{$cmd}";
+// 1. DB (node_commands) に「予約」としてインサート
+// val_status はデフォルトの 'pending' で入ります
+$sql = "INSERT INTO node_commands (sys_id, cmd_type, cmd_json, created_at) VALUES (?, ?, ?, NOW(3))";
 
-// 確実にトピックと中身を指定して実行
-$shell_cmd = "mosquitto_pub -h localhost -t '$topic' -m '$val' 2>&1";
-$output = shell_exec($shell_cmd);
+try {
+    $stmt = $mysqli->prepare($sql);
+    $stmt->bind_param("sss", $node_id, $cmd_type, $cmd_json);
+    
+    if ($stmt->execute()) {
+        // インサートされたIDを取得してJSに返す
+        $new_id = $mysqli->insert_id;
+        echo json_encode([
+            "status" => "ok",
+            "command_id" => $new_id
+        ]);
+    } else {
+        throw new Exception($stmt->error);
+    }
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => $e->getMessage()]);
+}
 
-// 実行結果もログに残す
-file_put_contents('cmd_debug.log', "Result: $output\n", FILE_APPEND);
-
-echo json_encode(["status" => "ok", "debug" => $output]);
+$mysqli->close();

@@ -5,32 +5,37 @@ import socket
 import time
 import fcntl
 import threading
+from common.vst_base import WildLinkVSTBase
 
-class VST_Camera:
-    def __init__(self, role, params, mqtt, on_event=None):
-        self.role = role
-        self.params = params
-        self.mqtt = mqtt
+class VST_Camera(WildLinkVSTBase):
+    def __init__(self, role, params, mqtt, event_callback=None):
+        super().__init__(role, params, mqtt, event_callback)
         
-        if self.role == "cam_main":
-            self.hw_type = "pi"
-            self.hw_device = None
-        else:
-            self.hw_type = "usb"
-            self.hw_device = "/dev/video0"
+        # ロールに基づくハードウェア抽象化
+        self.hw_type = "pi" if self.role == "cam_main" else "usb"
+        self.hw_device = None if self.hw_type == "pi" else "/dev/video0"
 
         self.val_res = params.get("val_res", "320x240")
         self.val_fps = params.get("val_fps", 5)
-        self.val_status = "idle"
         
         from common.wmp_core import WMPHeader
         self.wmp = WMPHeader(node_id="node_001", media_type=2)
         
-        self.gate_open = False
+        self.act_run = False 
+        self.val_status = "idle"
         self.process = None
         self.stop_event = threading.Event()
         
         self.start_camera_process()
+
+    @property
+    def status_dict(self):
+        """Managerのレポート機能が参照する現在のステータス"""
+        return {
+            "val_status": self.val_status,
+            "act_stream": self.act_run,
+            "log_msg": f"Streaming via {self.hw_type}" if self.act_run else "Ready"
+        }
 
     def start_camera_process(self):
         print(f"🎬 [{self.role}] Pre-starting camera process...")
@@ -38,74 +43,55 @@ class VST_Camera:
         self.thread.daemon = True
         self.thread.start()
 
-    def stop(self):
-        """リロード時に呼び出され、全てを綺麗に片付ける"""
-        print(f"♻️ [{self.role}] Stopping camera thread and process...")
-        self.stop_event.set() 
-        
-        if self.process:
-            # 1. 丁寧に終了を促す
-            self.process.terminate()
-            try:
-                # 2. 完全に消えるのを最大3秒待つ（PiZeroでは重要）
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                # 3. しぶとい場合は強制終了
-                print(f"⚠️ [{self.role}] Process hang detected. Killing...")
-                self.process.kill()
-                self.process.wait() # ゾンビプロセス化を防ぐ
-        
-        # 4. スレッドの合流を待つ（二重起動防止の要）
-        if hasattr(self, 'thread') and self.thread.is_alive():
-            self.thread.join(timeout=1)
-            
-        print(f"✅ [{self.role}] Stopped.")
-
-    def control(self, payload):
+    def execute_logic(self, payload):
+        """コマンドによる制御"""
+        action = payload.get("action")
+        # act_run (Boolean) または action (start/stop) の両方に対応
         if "act_run" in payload:
-            self.gate_open = payload["act_run"]
-            self.val_status = "streaming" if self.gate_open else "idle"
-            status_label = "OPEN" if self.gate_open else "CLOSED"
-            print(f"📽️ [{self.role}] Stream Gate: {status_label}")
+            self.act_run = payload["act_run"]
+        elif action == "start":
+            self.act_run = True
+        elif action == "stop":
+            self.act_run = False
+            
+        self.val_status = "streaming" if self.act_run else "idle"
+
+    def stop(self):
+        self.stop_event.set() 
+        if self.process:
+            self.process.terminate()
+            try: self.process.wait(timeout=1)
+            except: self.process.kill()
+        print(f"✅ [{self.role}] Unit stopped.")
 
     def _streaming_loop(self):
-        # --- 魔法のウェイト ---
-        # 前のインスタンスがデバイスを解放する時間を確保
         time.sleep(0.5)
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # 宛先IP/Port (Pi=5005, USB=5006)
         dest_addr = ("192.168.1.102", 5005 if self.hw_type == "pi" else 5006)
         
         if self.hw_type == "pi":
-            width, height = self.val_res.split('x')
-            cmd = [
-                "rpicam-vid", "-t", "0", "--inline", "--nopreview",
-                "--width", width, "--height", height,
-                "--framerate", str(self.val_fps),
-                "--codec", "mjpeg", "--flush", "--denoise", "cdn_off",
-                "--shutter", "20000", "--awbgains", "1.5,1.5", 
-                "-o", "-"
-            ]
+            w, h = self.val_res.split('x')
+            cmd = ["rpicam-vid", "-t", "0", "--inline", "--nopreview",
+                   "--width", w, "--height", h, "--framerate", str(self.val_fps),
+                   "--codec", "mjpeg", "--flush", "-o", "-"]
         else:
-            cmd = [
-                "ffmpeg", "-y", "-f", "v4l2", "-input_format", "mjpeg",
-                "-video_size", self.val_res, "-framerate", str(self.val_fps),
-                "-i", self.hw_device, "-c:v", "copy", "-f", "mjpeg", "-an", "pipe:1"
-            ]
+            cmd = ["ffmpeg", "-y", "-f", "v4l2", "-input_format", "mjpeg",
+                   "-video_size", self.val_res, "-framerate", str(self.val_fps),
+                   "-i", self.hw_device, "-c:v", "copy", "-f", "mjpeg", "-an", "pipe:1"]
 
-        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         
-        for p in [self.process.stdout, self.process.stderr]:
-            fd = p.fileno()
-            fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        # 非ブロッキング読み取り設定
+        fd = self.process.stdout.fileno()
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
         buffer = b""
         while not self.stop_event.is_set():
             try:
-                while True:
-                    chunk = self.process.stdout.read(16384)
-                    if not chunk: break
-                    buffer += chunk
+                chunk = self.process.stdout.read(16384)
+                if chunk: buffer += chunk
             except: pass
 
             a = buffer.rfind(b'\xff\xd8')
@@ -113,14 +99,11 @@ class VST_Camera:
             
             if a != -1 and b != -1:
                 frame = buffer[a:b+2]
-                if self.gate_open:
+                if self.act_run: # ゲートが開いているときのみ送信
                     self.wmp.send_large_data(sock, dest_addr, frame, flags=1)
                 buffer = buffer[b+2:]
-                time.sleep(1.0 / self.val_fps * 0.5) 
+                time.sleep(0.01)
             else:
                 time.sleep(0.001)
 
-        # ループを抜けた後の後始末
-        if self.process:
-            self.process.terminate()
         sock.close()

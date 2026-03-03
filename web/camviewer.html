@@ -142,8 +142,8 @@
                 }
 
                 configs.forEach(conf => {
-                    // DBのvst_classとvst_typeを利用
-                    createPluginUI(conf.vst_type, conf.vst_class);
+                    // オブジェクトをそのまま渡す
+                    createPluginUI(conf); 
                 });
 
                 // ロード完了後にステータス更新を開始
@@ -156,148 +156,158 @@
             }
         }
 
-        // 2. プラグインの見た目（UI）を生成
-        function createPluginUI(type, vClass) {
+        // --- 2. プラグインの見た目（UI）を動的に生成 ---
+        function createPluginUI(conf) {
+            // vst_type が "cam_main" などであることを期待
+            const { vst_type, vst_class, ui_component_type } = conf;
             const rack = document.getElementById('vst-rack');
-            const div = document.createElement('div');
-            div.className = `vst-plugin ${type}`;
             
-            // カテゴリに応じて表示名を変える
-            const displayName = type.toUpperCase();
+            // すでに同じIDのUIがあれば作らない
+            if (document.getElementById(`plugin-${vst_type}`)) return;
 
-            let inner = `
+            const div = document.createElement('div');
+            div.id = `plugin-${vst_type}`;
+            div.className = `vst-plugin ${vst_type}`;
+            
+            const displayName = vst_type.toUpperCase();
+
+            div.innerHTML = `
                 <div class="plugin-header">
-                    <span>${vClass}</span>
+                    <span>${vst_class}</span>
                     <span>${displayName}</span>
                 </div>
-                <div class="plugin-content" id="content-${type}">
-                    <div class="status-display" id="disp-${type}">OFFLINE</div>
-                    <div id="log-text-${type}" style="font-size:0.6rem; color:#666; width:100%; overflow:hidden; text-align:center;"></div>
+                <div class="plugin-content" id="content-${vst_type}">
+                    <div class="status-display" id="disp-${vst_type}">OFFLINE</div>
+                    <div id="log-text-${vst_type}" style="font-size:0.6rem; color:#666; width:100%; overflow:hidden; text-align:center;"></div>
+                </div>
+                <div class="vst-controls" id="controls-${vst_type}">
+                    ${getControlButtons(vst_type, ui_component_type)}
                 </div>
             `;
-
-            inner += `<div class="vst-controls">`;
-
-            // --- クラス（カテゴリ）に基づいたボタン生成 ---
-            const cls = vClass.toLowerCase();
-            if (cls === 'camera') {
-                inner += `
-                    <button class="btn-control" onclick="sendVstCmd('${type}', true)">STREAM START</button>
-                    <button class="btn-control" onclick="sendVstCmd('${type}', false)">STREAM STOP</button>
-                `;
-            } else if (cls === 'sensor') {
-                inner += `
-                    <button class="btn-control" onclick="sendVstCmd('${type}', 'scan')">FORCE SCAN</button>
-                `;
-            } else if (cls === 'actuator') {
-                inner += `
-                    <button class="btn-control" onclick="sendVstCmd('${type}', 'trigger')">ACTIVATE</button>
-                `;
-            } else {
-                inner += `<button class="btn-control" onclick="sendVstCmd('${type}', 'ping')">PING</button>`;
-            }
-
-            inner += `</div>`;
-            div.innerHTML = inner;
             rack.appendChild(div);
         }
 
-        // 3. ステータスの更新（最新のMQTT報告をDBから取得）
+        function getControlButtons(vst_type, type) {
+            switch(type) {
+                case 'camera':
+                    return `
+                        <button class="btn-control" onclick="sendVstCmd('${vst_type}', 'start')">STREAM START</button>
+                        <button class="btn-control" onclick="sendVstCmd('${vst_type}', 'stop')">STREAM STOP</button>
+                    `;
+                case 'sensor':
+                    return `<button class="btn-control" onclick="sendVstCmd('${vst_type}', 'scan')">FORCE SCAN</button>`;
+                default:
+                    return `<button class="btn-control" onclick="sendVstCmd('${vst_type}', 'ping')">PING</button>`;
+            }
+        }
+
+        // 3. ステータスの更新
         async function refreshStatus() {
             try {
                 const response = await fetch(`get_node_status.php?node_id=${NODE_ID}`);
                 if (!response.ok) return;
-                
                 const data = await response.json();
-                let raw = {};
-                try {
-                    // PiZeroのMainManagerが送ってくるJSON構造を解析
-                    raw = JSON.parse(data.raw_data);
-                } catch(e) { return; }
+                const raw = JSON.parse(data.raw_data);
 
-                // raw.units に各デバイスの情報が入っている (pi, usb, pir など)
                 if (raw.units) {
-                    // ... refreshStatus 関数の中身を以下に差し替え ...
-                    Object.keys(raw.units).forEach(unitName => {
-                        const unit = raw.units[unitName];
+                    for (const [unitName, unit] of Object.entries(raw.units)) {
                         const disp = document.getElementById(`disp-${unitName}`);
-                        const logText = document.getElementById(`log-text-${unitName}`); // ★ここを追加
+                        const contentArea = document.getElementById(`content-${unitName}`);
+
+                        if (!disp || !contentArea) {
+                            // もしUIがまだなければ作る（動的追加対応）
+                            continue; 
+                        }
+
+                        // statusが streaming または success の場合に映像を表示する
+                        const currentStatus = (unit.val_status || "").toLowerCase();
+                        const isStreaming = (currentStatus === 'streaming' || currentStatus === 'success');
                         const imgId = `view-${unitName}`;
                         let img = document.getElementById(imgId);
 
-                        if (disp) {
-                            // 文字列 "streaming" との比較を確実にする
-                            const isStreaming = (unit.val_status && unit.val_status.toLowerCase() === 'streaming');
-                            disp.innerText = unit.val_status ? unit.val_status.toUpperCase() : "IDLE";
-                            disp.style.color = isStreaming ? 'var(--success-color)' : 'cyan';
+                        disp.innerText = (unit.val_status || "IDLE").toUpperCase();
+                        disp.style.color = isStreaming ? 'var(--success-color)' : 'cyan';
 
-                            if (isStreaming) {
-                                if (!img) {
-                                    img = document.createElement('img');
-                                    img.id = imgId;
-                                    img.style.width = "100%";
-                                    img.style.marginTop = "10px";
-                                    img.style.border = "1px solid #333";
-                                    // キャッシュ回避のためにタイムスタンプを付与
-                                    img.src = `http://192.168.1.102:8080/stream/${unitName}?t=${new Date().getTime()}`;
-                                    
-                                    disp.parentElement.insertBefore(img, disp); 
-                                    disp.style.fontSize = "0.8rem"; 
-                                }
-                            } else {
-                                if (img) {
-                                    img.remove();
-                                    disp.style.fontSize = "1.2rem";
-                                }
+                        if (isStreaming) {
+                            if (!img) {
+                                img = document.createElement('img');
+                                img.id = imgId;
+                                img.style = "width:100%; border-radius:2px; margin-bottom:10px; border:1px solid var(--accent-color);";
+                                // キャッシュ対策のクエリ
+                                img.src = `http://192.168.1.102:8080/stream/${unitName}?t=${Date.now()}`;
+                                contentArea.insertBefore(img, disp);
+                                disp.style.fontSize = "0.7rem";
                             }
+                        } else if (img) {
+                            img.remove();
+                            disp.style.fontSize = "1.2rem";
                         }
-
-                        // ★logText の存在チェックを追加してエラーを防ぐ
-                        if (logText && unit.log_code) {
-                            logText.innerText = unit.log_code.split('\n').pop().substring(0, 40);
-                        }
-                    });                    
-                 }
-            } catch (e) {
-                console.warn("Refresh loop error", e);
-            }
+                    }
+                }
+            } catch (e) { console.error("Refresh Error:", e); }
         }
 
-        // 4. コマンド送信 (新・汎用バージョン)
-        async function sendVstCmd(target, isRun) {
+        // --- 4. コマンド送信 & 進捗追跡 (履歴重視バージョン) ---
+        async function sendVstCmd(target, action) {
             const btn = event.target;
             const originalText = btn.innerText;
-            btn.innerText = "SENDING...";
             btn.disabled = true;
+            btn.innerText = "WAITING DB...";
 
             try {
                 const formData = new URLSearchParams();
                 formData.append('node_id', NODE_ID);
-                // VST新仕様: cmdにはカテゴリ(cam)、valにはターゲットとアクションのJSONを入れる
-                formData.append('cmd', 'cam'); 
-                formData.append('val', JSON.stringify({
-                    "hw_target": target,
-                    "act_run": isRun
+                formData.append('cmd_type', 'vst_control'); 
+                formData.append('cmd_json', JSON.stringify({
+                    "action": action,
+                    "target": target
                 }));
 
-                const response = await fetch('send_cmd.php', {
-                    method: 'POST',
-                    body: formData
-                });
+                // 1. コマンド発行 (send_cmd.php は insert_id を返すように改造が必要)
+                const response = await fetch('send_cmd.php', { method: 'POST', body: formData });
+                const resData = await response.json();
                 
-                if(response.ok) {
-                    btn.style.backgroundColor = "var(--success-color)";
-                    btn.innerText = "COMMAND SENT";
-                }
+                if (!resData.command_id) throw new Error("No Command ID returned");
+                const cmdId = resData.command_id;
+
+                // 2. ステータス追跡ループ
+                const trackStatus = async () => {
+                    const check = await fetch(`get_command_status.php?id=${cmdId}`);
+                    const status = await check.json();
+                    
+                    if (status.acked_at) {
+                        btn.innerText = "NODE EXECUTING...";
+                        btn.style.backgroundColor = "orange";
+                    } else if (status.sent_at) {
+                        btn.innerText = "HUB SENT...";
+                        btn.style.backgroundColor = "cyan";
+                    }
+
+                    if (status.val_status === 'completed' || status.val_status === 'success') {
+                        btn.innerText = "SUCCESS (200)";
+                        btn.style.backgroundColor = "var(--success-color)";
+                        setTimeout(() => resetBtn(btn, originalText), 2000);
+                    } else if (status.val_status === 'error' || (status.log_code && status.log_code >= 400)) {
+                        btn.innerText = `ERR: ${status.log_code || 'FAILED'}`;
+                        btn.style.backgroundColor = "red";
+                        setTimeout(() => resetBtn(btn, originalText), 3000);
+                    } else {
+                        setTimeout(trackStatus, 1000); // 継続監視
+                    }
+                };
+                trackStatus();
+
             } catch (e) {
                 console.error("Send failed", e);
-            } finally {
-                setTimeout(() => {
-                    btn.innerText = originalText;
-                    btn.style.backgroundColor = "";
-                    btn.disabled = false;
-                }, 1000);
+                btn.innerText = "SEND ERROR";
+                setTimeout(() => resetBtn(btn, originalText), 2000);
             }
+        }
+
+        function resetBtn(btn, text) {
+            btn.innerText = text;
+            btn.style.backgroundColor = "";
+            btn.disabled = false;
         }
 
         window.addEventListener('DOMContentLoaded', initRack);

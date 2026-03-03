@@ -39,15 +39,16 @@ MariaDB [wildlink_db]> SHOW TABLES;
 +-----------------------+
 
 MariaDB [wildlink_db]> SHOW COLUMNS FROM device_catalog;
-+----------------+--------------+------+-----+---------+-------+
-| Field          | Type         | Null | Key | Default | Extra |
-+----------------+--------------+------+-----+---------+-------+
-| vst_type       | varchar(50)  | NO   | PRI | NULL    |       |
-| vst_class      | varchar(100) | YES  |     | NULL    |       |
-| vst_module     | varchar(100) | YES  |     | NULL    |       |
-| default_params | longtext     | YES  |     | NULL    |       |
-| log_note       | text         | YES  |     | NULL    |       |
-+----------------+--------------+------+-----+---------+-------+
++-------------------+--------------+------+-----+---------+-------+
+| Field             | Type         | Null | Key | Default | Extra |
++-------------------+--------------+------+-----+---------+-------+
+| vst_type          | varchar(50)  | NO   | PRI | NULL    |       |
+| vst_class         | varchar(100) | YES  |     | NULL    |       |
+| ui_component_type | varchar(30)  | YES  |     | NULL    |       |
+| vst_module        | varchar(100) | YES  |     | NULL    |       |
+| default_params    | longtext     | YES  |     | NULL    |       |
+| log_note          | text         | YES  |     | NULL    |       |
++-------------------+--------------+------+-----+---------+-------+
 
 MariaDB [wildlink_db]> SHOW COLUMNS FROM node_commands;
 +--------------+--------------+------+-----+----------------------+----------------+
@@ -58,6 +59,7 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM node_commands;
 | cmd_type     | varchar(50)  | YES  |     | NULL                 |                |
 | cmd_json     | longtext     | YES  |     | NULL                 |                |
 | val_status   | varchar(20)  | YES  | MUL | pending              |                |
+| log_code     | varchar(30)  | YES  | MUL | NULL                 |                |
 | log_msg      | text         | YES  |     | NULL                 |                |
 | created_at   | timestamp(3) | YES  |     | current_timestamp(3) |                |
 | sent_at      | timestamp(3) | YES  |     | NULL                 |                |

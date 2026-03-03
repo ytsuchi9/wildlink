@@ -4,7 +4,7 @@ import os
 import sys
 import subprocess
 import time
-import threading  # 追加
+import threading
 from datetime import datetime
 
 # --- パス解決 ---
@@ -18,19 +18,15 @@ from db_bridge import DBBridge
 class WildLinkHubManager:
     def __init__(self):
         self.db = DBBridge()
-        # 最新のPaho MQTTライブラリに対応
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id="wildlink_hub")
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         
         self.stream_process = None
         self.rx_script_path = os.path.join(current_dir, "wmp_stream_rx.py")
-        
-        # コマンド送信ループの停止フラグ
         self.running = True
 
     def manage_stream_process(self, is_active):
-        """wmp_stream_rx.py の起動と停止を管理"""
         if is_active:
             if self.stream_process is None or self.stream_process.poll() is not None:
                 print(f"🎬 Starting Stream Receiver: {self.rx_script_path}")
@@ -50,93 +46,77 @@ class WildLinkHubManager:
                 self.stream_process = None
 
     def command_dispatcher_loop(self):
-        """DBから未処理コマンドを探してMQTTで送るループ (別スレッド)"""
-        print("📨 Command Dispatcher started.")
+        """DBから pending コマンドを拾って送信する運び屋"""
+        print("📨 Command Dispatcher Loop is active.")
         while self.running:
             try:
-                # 1. DBから 'pending' ステータスのコマンドを取得
+                # DBから 'pending' 状態のコマンドを取得
                 commands = self.db.fetch_pending_commands() 
                 
                 for cmd in commands:
-                    # 【重要】DBのカラム名に合わせて 'sys_id' を使用
+                    cmd_id = cmd['id']
                     node_id = cmd['sys_id'] 
-                    topic = f"node/cmd/{node_id}"
+                    cmd_type = cmd.get('cmd_type', 'vst_control') # PHP側と合わせる
                     
-                    # cmd_json が文字列で保存されている場合のパース処理（念のため）
-                    params = {}
-                    if 'cmd_json' in cmd and cmd['cmd_json']:
+                    # 設計した新トピック形式: vst/node_001/cmd/vst_control
+                    topic = f"vst/{node_id}/cmd/{cmd_type}"
+                    
+                    # cmd_json (パッチ) をパースして ID を付与
+                    payload_dict = {}
+                    if cmd['cmd_json']:
                         try:
-                            params = json.loads(cmd['cmd_json']) if isinstance(cmd['cmd_json'], str) else cmd['cmd_json']
+                            payload_dict = json.loads(cmd['cmd_json'])
                         except:
-                            pass
+                            payload_dict = {"raw": cmd['cmd_json']}
+                    
+                    # Node側にこのIDを返してもらうことで追跡を完結させる
+                    payload_dict['cmd_id'] = cmd_id
+                    
+                    json_payload = json.dumps(payload_dict)
 
-                    payload = {
-                        "target": params.get("target", "manager"),
-                        "action": params.get("action", "reload"),
-                        "cmd_id": cmd['id']
-                    }
+                    # MQTTパブリッシュ
+                    print(f"📤 Dispatching [ID:{cmd_id}] to {topic} -> {json_payload}")
+                    self.client.publish(topic, json_payload, qos=1)
                     
-                    # 2. MQTTパブリッシュ
-                    print(f"📤 Sending command to {node_id}: {payload['action']} (ID: {cmd['id']})")
-                    self.client.publish(topic, json.dumps(payload), qos=1)
-                    
-                    # 3. ステータスを 'sent' に更新
-                    self.db.update_command_status(cmd['id'], "sent")
+                    # ステータスを 'sent' に更新 (ここで WebUI のボタンが水色に変わる)
+                    self.db.update_command_status(cmd_id, "sent")
                     
             except Exception as e:
-                # ここでエラー内容を詳しく出すようにするとデバッグが捗ります
-                print(f"❌ Error in command_dispatcher: {e}")
+                print(f"❌ Dispatcher Error: {e}")
             
-            time.sleep(2)
+            time.sleep(1) # 1秒周期
 
     def on_connect(self, client, userdata, flags, rc):
-        print(f"🌐 Hub Manager Connected (Result code {rc})")
-        # Nodeからの応答トピックを購読
-        client.subscribe("node/status/+") # センサーデータなど
-        client.subscribe("wildlink/+/res") # 実行結果など
+        print(f"🌐 Hub Manager Connected (rc:{rc})")
+        # Nodeからの応答トピックを購読 (設計に合わせたワイルドカード)
+        client.subscribe("vst/+/res") 
 
     def on_message(self, client, userdata, msg):
+        """Nodeからの実行結果 (vst/node_001/res) を受け取った時の処理"""
         try:
             payload = json.loads(msg.payload.decode())
-            # トピックからNode IDを特定 (例: node/status/node_001)
-            topic_parts = msg.topic.split('/')
-            node_id = topic_parts[-1] 
-
-            # ステータス更新
-            self.db.update_node_status(node_id, payload)
-            
-            # ストリーム連動ロジック (既存)
-            if "camera" in payload and "act_stream" in payload["camera"]:
-                is_streaming = payload["camera"]["act_stream"]
-                if payload.get("val_status") in ["success", "ack"]:
-                    self.manage_stream_process(is_streaming)
-                elif not is_streaming:
-                    self.manage_stream_process(False)
-
+            # 実行結果をDBに反映 (acked_at や completed_at が更新される)
+            self.db.update_node_status(None, payload) # node_idはpayload内から取得される
+            print(f"📥 Received Response from Node: {payload}")
         except Exception as e:
-            print(f"❌ Error in Hub on_message: {e}")
+            print(f"❌ Message Handler Error: {e}")
 
     def run(self):
         broker = os.getenv("MQTT_BROKER", "localhost")
         self.client.connect(broker, 1883, 60)
-        
-        # MQTTループをバックグラウンドで開始
         self.client.loop_start()
         
-        # コマンド配送ループを別スレッドで開始
-        dispatch_thread = threading.Thread(target=self.command_dispatcher_loop)
+        # Dispatcherを別スレッドで開始
+        dispatch_thread = threading.Thread(target=self.command_dispatcher_loop, daemon=True)
         dispatch_thread.start()
 
-        print(f"📡 Hub Manager is running (Broker: {broker})...")
+        print(f"📡 Hub Manager is running...")
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            print("Stopping Hub Manager...")
             self.running = False
-            self.manage_stream_process(False)
             self.client.loop_stop()
-            dispatch_thread.join()
 
 if __name__ == "__main__":
     manager = WildLinkHubManager()
