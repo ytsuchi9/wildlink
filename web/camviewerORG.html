@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WildLink 2026 | Rack Console</title>
+    <style>
+        :root {
+            --bg-color: #0f0f0f;
+            --panel-color: #222222;
+            --accent-color: #00d1ff;
+            --text-color: #e0e0e0;
+            --success-color: #39ff14;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Courier New', Courier, monospace; /* プロ機材感 */
+            margin: 0;
+            padding: 20px;
+        }
+
+        h1 { 
+            font-size: 1.5rem;
+            border-left: 5px solid var(--accent-color);
+            padding-left: 15px;
+            margin-bottom: 30px;
+            letter-spacing: 3px;
+        }
+
+        /* ラックの外枠 */
+        #vst-rack {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 25px;
+        }
+
+        /* VSTプラグインパネルのデザイン */
+        .vst-plugin {
+            background: var(--panel-color);
+            border: 2px solid #333;
+            border-top: 4px solid #444;
+            border-radius: 4px;
+            padding: 20px;
+            position: relative;
+            box-shadow: inset 0 0 10px #000, 0 5px 15px rgba(0,0,0,0.7);
+        }
+
+        /* 装飾用のネジ */
+        .vst-plugin::before, .vst-plugin::after {
+            content: '⊕';
+            color: #444;
+            position: absolute;
+            top: 5px;
+            font-size: 12px;
+        }
+        .vst-plugin::before { left: 8px; }
+        .vst-plugin::after { right: 8px; }
+
+        .plugin-header {
+            font-size: 0.75rem;
+            color: var(--accent-color);
+            text-transform: uppercase;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .plugin-content {
+            background: #000;
+            border: 1px solid #111;
+            min-height: 120px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            border-radius: 3px;
+            margin-bottom: 15px;
+        }
+
+        .status-display {
+            font-size: 1.2rem;
+            font-weight: bold;
+            text-shadow: 0 0 8px var(--accent-color);
+        }
+
+        .btn-control {
+            background: #333;
+            color: #fff;
+            border: 1px solid #555;
+            padding: 8px 15px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.2s;
+            width: 100%;
+            margin-top: 5px;
+        }
+        .btn-control:hover {
+            background: var(--accent-color);
+            color: #000;
+        }
+
+        .led-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+            background-color: #444;
+        }
+        .led-on { background-color: var(--success-color); box-shadow: 0 0 8px var(--success-color); }
+    </style>
+</head>
+<body>
+
+    <h1>WILDLINK SYSTEM RACK <small style="font-size: 0.5em; vertical-align: middle;">Ver 2026.1</small></h1>
+    
+    <div id="vst-rack">
+        <p style="text-align:center; color:#555;">Initializing Rack Modules...</p>
+    </div>
+
+    <script>
+        const NODE_ID = 'node_001';
+
+        // 1. ラックの初期化（DBから構成を読み込む）
+        async function initRack() {
+            console.log("Rack loading started...");
+            try {
+                const response = await fetch(`get_node_config.php?node_id=${NODE_ID}`);
+                if (!response.ok) throw new Error("Config PHP not found");
+                
+                const configs = await response.json();
+                const rack = document.getElementById('vst-rack');
+                rack.innerHTML = ''; 
+
+                if (configs.length === 0) {
+                    rack.innerHTML = '<p>No VST modules found in DB.</p>';
+                    return;
+                }
+
+                configs.forEach(conf => {
+                    // オブジェクトをそのまま渡す
+                    createPluginUI(conf); 
+                });
+
+                // ロード完了後にステータス更新を開始
+                refreshStatus();
+                setInterval(refreshStatus, 3000);
+
+            } catch (e) {
+                console.error("Init Rack Error:", e);
+                document.getElementById('vst-rack').innerHTML = `<p style="color:red;">Error: ${e.message}</p>`;
+            }
+        }
+
+        // --- 2. プラグインの見た目（UI）を動的に生成 ---
+        function createPluginUI(conf) {
+            // vst_type が "cam_main" などであることを期待
+            const { vst_type, vst_class, ui_component_type } = conf;
+            const rack = document.getElementById('vst-rack');
+            
+            // すでに同じIDのUIがあれば作らない
+            if (document.getElementById(`plugin-${vst_type}`)) return;
+
+            const div = document.createElement('div');
+            div.id = `plugin-${vst_type}`;
+            div.className = `vst-plugin ${vst_type}`;
+            
+            const displayName = vst_type.toUpperCase();
+
+            div.innerHTML = `
+                <div class="plugin-header">
+                    <span>${vst_class}</span>
+                    <span>${displayName}</span>
+                </div>
+                <div class="plugin-content" id="content-${vst_type}">
+                    <div class="status-display" id="disp-${vst_type}">OFFLINE</div>
+                    <div id="log-text-${vst_type}" style="font-size:0.6rem; color:#666; width:100%; overflow:hidden; text-align:center;"></div>
+                </div>
+                <div class="vst-controls" id="controls-${vst_type}">
+                    ${getControlButtons(vst_type, ui_component_type)}
+                </div>
+            `;
+            rack.appendChild(div);
+        }
+
+        function getControlButtons(vst_type, type) {
+            switch(type) {
+                case 'camera':
+                    return `
+                        <button class="btn-control" onclick="sendVstCmd('${vst_type}', 'start')">STREAM START</button>
+                        <button class="btn-control" onclick="sendVstCmd('${vst_type}', 'stop')">STREAM STOP</button>
+                    `;
+                case 'sensor':
+                    return `<button class="btn-control" onclick="sendVstCmd('${vst_type}', 'scan')">FORCE SCAN</button>`;
+                default:
+                    return `<button class="btn-control" onclick="sendVstCmd('${vst_type}', 'ping')">PING</button>`;
+            }
+        }
+
+        // 3. ステータスの更新
+        async function refreshStatus() {
+            try {
+                const response = await fetch(`get_node_status.php?node_id=${NODE_ID}`);
+                if (!response.ok) return;
+                const data = await response.json();
+                const raw = JSON.parse(data.raw_data);
+
+                if (raw.units) {
+                    for (const [unitName, unit] of Object.entries(raw.units)) {
+                        const disp = document.getElementById(`disp-${unitName}`);
+                        const contentArea = document.getElementById(`content-${unitName}`);
+
+                        if (!disp || !contentArea) {
+                            // もしUIがまだなければ作る（動的追加対応）
+                            continue; 
+                        }
+
+                        // statusが streaming または success の場合に映像を表示する
+                        const currentStatus = (unit.val_status || "").toLowerCase();
+                        const isStreaming = (currentStatus === 'streaming' || currentStatus === 'success');
+                        const imgId = `view-${unitName}`;
+                        let img = document.getElementById(imgId);
+
+                        disp.innerText = (unit.val_status || "IDLE").toUpperCase();
+                        disp.style.color = isStreaming ? 'var(--success-color)' : 'cyan';
+
+                        if (isStreaming) {
+                            if (!img) {
+                                img = document.createElement('img');
+                                img.id = imgId;
+                                img.style = "width:100%; border-radius:2px; margin-bottom:10px; border:1px solid var(--accent-color);";
+                                // キャッシュ対策のクエリ
+                                img.src = `http://192.168.1.102:8080/stream/${unitName}?t=${Date.now()}`;
+                                contentArea.insertBefore(img, disp);
+                                disp.style.fontSize = "0.7rem";
+                            }
+                        } else if (img) {
+                            img.remove();
+                            disp.style.fontSize = "1.2rem";
+                        }
+                    }
+                }
+            } catch (e) { console.error("Refresh Error:", e); }
+        }
+
+        // --- 4. コマンド送信 & 進捗追跡 (履歴重視バージョン) ---
+        async function sendVstCmd(target, action) {
+            const btn = event.target;
+            const originalText = btn.innerText;
+            btn.disabled = true;
+            btn.innerText = "WAITING DB...";
+
+            try {
+                const formData = new URLSearchParams();
+                formData.append('node_id', NODE_ID);
+                formData.append('cmd_type', 'vst_control'); 
+                formData.append('cmd_json', JSON.stringify({
+                    "action": action,
+                    "target": target
+                }));
+
+                // 1. コマンド発行 (send_cmd.php は insert_id を返すように改造が必要)
+                const response = await fetch('send_cmd.php', { method: 'POST', body: formData });
+                const resData = await response.json();
+                
+                if (!resData.command_id) throw new Error("No Command ID returned");
+                const cmdId = resData.command_id;
+
+                // 2. ステータス追跡ループ
+                const trackStatus = async () => {
+                    const check = await fetch(`get_command_status.php?id=${cmdId}`);
+                    const status = await check.json();
+                    
+                    if (status.acked_at) {
+                        btn.innerText = "NODE EXECUTING...";
+                        btn.style.backgroundColor = "orange";
+                    } else if (status.sent_at) {
+                        btn.innerText = "HUB SENT...";
+                        btn.style.backgroundColor = "cyan";
+                    }
+
+                    if (status.val_status === 'completed' || status.val_status === 'success') {
+                        btn.innerText = "SUCCESS (200)";
+                        btn.style.backgroundColor = "var(--success-color)";
+                        setTimeout(() => resetBtn(btn, originalText), 2000);
+                    } else if (status.val_status === 'error' || (status.log_code && status.log_code >= 400)) {
+                        btn.innerText = `ERR: ${status.log_code || 'FAILED'}`;
+                        btn.style.backgroundColor = "red";
+                        setTimeout(() => resetBtn(btn, originalText), 3000);
+                    } else {
+                        setTimeout(trackStatus, 1000); // 継続監視
+                    }
+                };
+                trackStatus();
+
+            } catch (e) {
+                console.error("Send failed", e);
+                btn.innerText = "SEND ERROR";
+                setTimeout(() => resetBtn(btn, originalText), 2000);
+            }
+        }
+
+        function resetBtn(btn, text) {
+            btn.innerText = text;
+            btn.style.backgroundColor = "";
+            btn.disabled = false;
+        }
+
+        window.addEventListener('DOMContentLoaded', initRack);
+    </script>
+</body>
+</html>

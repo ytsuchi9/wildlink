@@ -61,6 +61,7 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM node_commands;
 | val_status   | varchar(20)  | YES  | MUL | pending              |                |
 | log_code     | varchar(30)  | YES  | MUL | NULL                 |                |
 | log_msg      | text         | YES  |     | NULL                 |                |
+| res_payload  | longtext     | YES  |     | NULL                 |                |
 | created_at   | timestamp(3) | YES  |     | current_timestamp(3) |                |
 | sent_at      | timestamp(3) | YES  |     | NULL                 |                |
 | acked_at     | timestamp(3) | YES  |     | NULL                 |                |
@@ -84,8 +85,6 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM node_data;
 +------------+-------------+------+-----+---------------------+----------------+
 | id         | int(11)     | NO   | PRI | NULL                | auto_increment |
 | sys_id     | varchar(50) | NO   |     | NULL                |                |
-| sys_cpu_t  | float       | YES  |     | NULL                |                |
-| sys_volt   | float       | YES  |     | NULL                |                |
 | env_temp   | float       | YES  |     | NULL                |                |
 | env_hum    | float       | YES  |     | NULL                |                |
 | env_pres   | float       | YES  |     | NULL                |                |
@@ -113,17 +112,19 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM nodes;
 +---------------+---------------+------+-----+---------------------+-------------------------------+
 
 MariaDB [wildlink_db]> SHOW COLUMNS FROM system_logs;
-+------------+-------------+------+-----+---------------------+----------------+
-| Field      | Type        | Null | Key | Default             | Extra          |
-+------------+-------------+------+-----+---------------------+----------------+
-| id         | int(11)     | NO   | PRI | NULL                | auto_increment |
-| sys_id     | varchar(50) | YES  | MUL | NULL                |                |
-| log_level  | varchar(20) | YES  |     | info                |                |
-| log_code   | int(11)     | YES  |     | 0                   |                |
-| sys_volt   | float       | YES  |     | NULL                |                |
-| sys_cpu_t  | float       | YES  |     | NULL                |                |
-| net_rssi   | int(11)     | YES  |     | NULL                |                |
-| sys_up     | int(11)     | YES  |     | NULL                |                |
-| log_msg    | text        | YES  |     | NULL                |                |
-| created_at | timestamp   | YES  |     | current_timestamp() |                |
-+------------+-------------+------+-----+---------------------+----------------+
++-------------+-------------+------+-----+---------------------+----------------+
+| Field       | Type        | Null | Key | Default             | Extra          |
++-------------+-------------+------+-----+---------------------+----------------+
+| id          | int(11)     | NO   | PRI | NULL                | auto_increment |
+| sys_id      | varchar(50) | YES  | MUL | NULL                |                |
+| log_level   | varchar(20) | YES  |     | info                |                |
+| log_code    | int(11)     | YES  |     | 0                   |                |
+| sys_volt    | float       | YES  |     | NULL                |                |
+| sys_cpu_t   | float       | YES  |     | NULL                |                |
+| sys_board_t | float       | YES  |     | NULL                |                |
+| net_rssi    | float       | YES  |     | NULL                |                |
+| sys_up      | int(11)     | YES  |     | NULL                |                |
+| log_msg     | text        | YES  |     | NULL                |                |
+| created_at  | timestamp   | YES  |     | current_timestamp() |                |
+| log_ext     | longtext    | YES  |     | NULL                |                |
++-------------+-------------+------+-----+---------------------+----------------+

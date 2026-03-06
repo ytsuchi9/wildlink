@@ -1,40 +1,59 @@
 <?php
-// /var/www/html/get_node_status.php
-require_once 'db_config.php';
 header('Content-Type: application/json');
+
+// 1. db_config.php を読み込む (これで $mysqli が使えるようになる)
+require_once('db_config.php'); 
 
 $node_id = $_GET['node_id'] ?? 'node_001';
 
-// created_at を log_at として取得
-$sql = "SELECT sys_id, raw_data, created_at as log_at 
-        FROM node_data 
-        WHERE sys_id = ? 
-        ORDER BY created_at DESC LIMIT 1";
-
 try {
-    $stmt = $mysqli->prepare($sql);
-    $stmt->bind_param("s", $node_id);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $data = $result->fetch_assoc();
-
-    if ($data) {
-        // raw_data(JSON)をパースして sys_status を取り出し、CamViewer用の階層にセット
-        $raw_obj = json_decode($data['raw_data'], true);
-        $data['sys_status'] = $raw_obj['sys_status'] ?? 'unknown';
-        
-        echo json_encode($data);
-    } else {
-        echo json_encode([
-            "sys_id" => $node_id,
-            "sys_status" => "offline",
-            "raw_data" => "{}",
-            "log_at" => null
-        ]);
+    // 変数名チェック: $pdo ではなく $mysqli が存在するか確認
+    if (!isset($mysqli)) {
+        throw new Exception("Database connection (\$mysqli) not found.");
     }
+
+    // --- 1. バイタル取得 (system_logs) ---
+    $sql_v = "SELECT sys_cpu_t, net_rssi FROM system_logs WHERE sys_id = ? ORDER BY id DESC LIMIT 1";
+    $stmt_v = $mysqli->prepare($sql_v);
+    $stmt_v->bind_param("s", $node_id);
+    $stmt_v->execute();
+    $vitals = $stmt_v->get_result()->fetch_assoc();
+
+    // --- 2. ユニット状態の結合取得 (node_configs + node_status_current) ---
+    $sql_s = "
+        SELECT c.vst_type, IFNULL(s.val_status, 'idle') as val_status 
+        FROM node_configs c
+        LEFT JOIN node_status_current s ON c.sys_id = s.sys_id AND c.vst_type = s.vst_type
+        WHERE c.sys_id = ?
+    ";
+    $stmt_s = $mysqli->prepare($sql_s);
+    $stmt_s->bind_param("s", $node_id);
+    $stmt_s->execute();
+    $res_s = $stmt_s->get_result();
+    
+    $unit_statuses = [];
+    while ($row = $res_s->fetch_assoc()) {
+        $unit_statuses[$row['vst_type']] = $row['val_status'];
+    }
+
+    // --- 3. 最新環境データ (node_data) ---
+    $sql_d = "SELECT raw_data FROM node_data WHERE sys_id = ? ORDER BY id DESC LIMIT 1";
+    $stmt_d = $mysqli->prepare($sql_d);
+    $stmt_d->bind_param("s", $node_id);
+    $stmt_d->execute();
+    $env_row = $stmt_d->get_result()->fetch_assoc();
+    $env_data = json_decode($env_row['raw_data'] ?? '{}', true);
+
+    // 全て成功したら JSON を返す
+    echo json_encode([
+        'status' => 'success',
+        'vitals' => $vitals,
+        'unit_statuses' => $unit_statuses,
+        'env_data' => $env_data,
+        'server_time' => date('H:i:s')
+    ]);
+
 } catch (Exception $e) {
     http_response_code(500);
-    echo json_encode(["error" => $e->getMessage()]);
+    echo json_encode(['status' => 'error', 'msg' => $e->getMessage()]);
 }
-
-$mysqli->close();

@@ -43,17 +43,23 @@ class MainManager:
             cmd_id = payload.get("cmd_id")
             res_topic = f"vst/{self.node_id}/res"
 
+            # 1. 受領報告 (Ack)
             if cmd_id:
-                # 1. Ack (受領報告)
-                self.mqtt.client.publish(res_topic, json.dumps({"cmd_id": cmd_id, "val_status": "acked"}))
+                self.mqtt.client.publish(res_topic, json.dumps({
+                    "cmd_id": cmd_id, "val_status": "acked"
+                }))
 
+            # 2. 実行
             if target in self.units:
-                # 2. 実行
                 try:
                     self.units[target].control(payload)
                     if cmd_id:
+                        # 成功時の詳細レスポンス
                         self.mqtt.client.publish(res_topic, json.dumps({
-                            "cmd_id": cmd_id, "val_status": "success", "log_code": 200
+                            "cmd_id": cmd_id,
+                            "val_status": "success",
+                            "log_code": 200,
+                            "target_status": getattr(self.units[target], 'val_status', 'unknown')
                         }))
                 except Exception as unit_e:
                     if cmd_id:
@@ -61,33 +67,38 @@ class MainManager:
                             "cmd_id": cmd_id, "val_status": "error", "log_code": 500, "log_msg": str(unit_e)
                         }))
             
-            # マネージャー自身へのコマンド（リロードなど）
-            if target == "manager" and payload.get("action") == "reload":
-                print("⚡ [MQTT] Reload command received")
+            elif target == "manager" and payload.get("action") == "reload":
                 self.load_and_init_units()
+                if cmd_id:
+                    self.mqtt.client.publish(res_topic, json.dumps({
+                        "cmd_id": cmd_id, "val_status": "success", "log_code": 200, "log_msg": "Manager reloaded"
+                    }))
 
         except Exception as e:
             print(f"❌ [MQTT] Error: {e}")
 
     def send_report(self):
-        """現在の全ユニットの状態をHubへMQTT送信"""
+        """バイタルデータとユニット状態を分けて報告"""
         if not self.mqtt: return
         
+        # 将来的にはRTCなどから board_t を取得するが、今はダミー
         report = {
             "sys_monitor": {
                 "sys_cpu_t": self._get_cpu_temp(),
-                "net_rssi": -50, 
-                "log_msg": "System healthy"
+                "sys_board_t": 35.5, # 例: RTCや他センサーの温度
+                "net_rssi": -45.0,    # 例: 実際はコマンド等で取得
+                "log_msg": "Healthy"
             },
-            "units": {}
+            # "units": {role: unit.status_dict for role, unit in self.units.items()}
+            # 修正後：status_dict が無くてもエラーにならないようにガードをかける
+            "units": {
+                role: getattr(unit, "status_dict", {"val_status": "loaded", "log_msg": "no status info"}) 
+                for role, unit in self.units.items()
+            }
         }
-        for role, unit in self.units.items():
-            # ユニットからステータス辞書を取得
-            report["units"][role] = getattr(unit, "status_dict", {"val_status": "unknown"})
         
-        topic = f"vst/{self.node_id}/report"
-        self.mqtt.publish(topic, report)
-        print(f"📊 [Manager] Report sent to {topic}")
+        self.mqtt.publish(f"vst/{self.node_id}/report", report)
+        print(f"📊 [Manager] Report sent.")
 
     def _get_cpu_temp(self):
         try:
