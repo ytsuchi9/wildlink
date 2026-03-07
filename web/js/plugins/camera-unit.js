@@ -3,6 +3,12 @@ class CameraUnit {
         this.conf = conf;
         this.manager = manager;
         this.name = conf.vst_type;
+        
+        // 💡 ハードコード排除：設定値から取得、なければ現在のホスト(Hub)のIPをベースにする
+        // conf.val_params は VstManager 内で JSON.parse 済みである前提
+        const params = conf.val_params || {};
+        this.streamHost = params.host || window.location.hostname; 
+        this.streamPort = params.port || "8080";
     }
 
     // 初期UI構築（ボタンなど）
@@ -14,7 +20,7 @@ class CameraUnit {
         `;
     }
 
-    // 状態更新（マネージャーから毎周期呼ばれる）
+    // 状態更新
     update(unitData) {
         const el = document.getElementById(`plugin-${this.name}`);
         const disp = document.getElementById(`disp-${this.name}`);
@@ -24,20 +30,35 @@ class CameraUnit {
         disp.innerText = (unitData.val_status || "IDLE").toUpperCase();
 
         if (isStreaming) {
-            el.classList.add('u3'); // 3Uに拡張
+            el.classList.add('u3');
             this.ensureStream(content);
         } else {
-            el.classList.remove('u3'); // 1Uに戻す
+            el.classList.remove('u3');
             this.removeStream(content);
         }
     }
 
     ensureStream(container) {
-        if (!document.getElementById(`view-${this.name}`)) {
-            const img = document.createElement('img');
+        let img = document.getElementById(`view-${this.name}`);
+        
+        if (!img) {
+            img = document.createElement('img');
             img.id = `view-${this.name}`;
-            img.src = `http://192.168.1.102:8080/stream/${this.name}?t=${Date.now()}`;
             img.style.width = "100%";
+            
+            // 💡 リトライロジック + 動的URL
+            const buildUrl = () => `http://${this.streamHost}:${this.streamPort}/stream/${this.name}?t=${Date.now()}`;
+
+            img.onerror = () => {
+                console.warn(`[${this.name}] Stream load error. Retrying in 1.5s...`);
+                setTimeout(() => {
+                    // まだ要素がDOMに存在する場合のみリロード
+                    const currentImg = document.getElementById(`view-${this.name}`);
+                    if (currentImg) currentImg.src = buildUrl();
+                }, 1500); 
+            };
+
+            img.src = buildUrl();
             container.prepend(img);
             document.getElementById(`disp-${this.name}`).style.fontSize = "0.7rem";
         }
@@ -45,11 +66,18 @@ class CameraUnit {
 
     removeStream(container) {
         const img = document.getElementById(`view-${this.name}`);
-        if (img) img.remove();
+        if (img) {
+            // 💡 削除する前にsrcを空にするのがコツ
+            // これにより、ブラウザが「このストリーム通信はもう不要だ」と判断し、
+            // wmp_stream_rx.py 側に切断（GeneratorExit）を発生させやすくなります。
+            img.src = ""; 
+            img.remove();
+            console.log(`[${this.name}] Stream stopped and element removed.`);
+        }
         document.getElementById(`disp-${this.name}`).style.fontSize = "1.1rem";
     }
 
-    // 静的メソッド：ボタンからのコマンド送信（追跡機能付き）
+    // static sendCmd 内の NODE_ID は camviewer.html で定義されているグローバル変数を使用
     static async sendCmd(target, action) {
         const btn = event.target;
         const originalText = btn.innerText;
@@ -58,7 +86,7 @@ class CameraUnit {
 
         try {
             const formData = new URLSearchParams();
-            formData.append('node_id', NODE_ID);
+            formData.append('node_id', NODE_ID); 
             formData.append('cmd_type', 'vst_control');
             formData.append('cmd_json', JSON.stringify({ "action": action, "target": target }));
 
@@ -66,7 +94,6 @@ class CameraUnit {
             const data = await res.json();
             const cmdId = data.command_id;
 
-            // ステータス追跡
             const track = async () => {
                 const check = await fetch(`get_command_status.php?id=${cmdId}`);
                 const status = await check.json();
@@ -74,7 +101,6 @@ class CameraUnit {
                 if (status.val_status === 'success') {
                     btn.innerText = "SUCCESS";
                     btn.style.backgroundColor = "var(--success-color)";
-                    // 成功したら即座にマネージャーをリフレッシュ
                     if (window.vstManagerInstance) window.vstManagerInstance.refresh();
                     setTimeout(() => CameraUnit.resetBtn(btn, originalText), 2000);
                 } else if (status.val_status === 'error') {

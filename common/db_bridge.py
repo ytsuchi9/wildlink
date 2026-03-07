@@ -104,14 +104,37 @@ class DBBridge:
         """UPDATE/INSERT/DELETE 実行用汎用メソッド"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor()
+            # 💡 buffered=True を追加して、応答をドライバ内で完結させる
+            cursor = conn.cursor(buffered=True) 
             cursor.execute(sql, params or ())
+            
+            # 💡念のため、未読データがあれば消費する
+            if cursor.with_rows:
+                cursor.fetchall()
+                
+            conn.commit() # 明示的にコミット
             cursor.close()
             conn.close()
             return True
         except Exception as e:
-            print(f"[DBBridge] Execute Error: {e}")
+            # ここでエラーが出た際、SQLの中身も出すとデバッグが捗ります
+            print(f"[DBBridge] Execute Error: {e} | SQL: {sql[:50]}...")
             return False
+
+    # 💡 SELECT用に新しくメソッドを追加（status_engine.pyの同期で使う用）
+    def fetch_one(self, sql, params=None):
+        """1件取得用"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor(buffered=True)
+            cursor.execute(sql, params or ())
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return result
+        except Exception as e:
+            print(f"[DBBridge] FetchOne Error: {e}")
+            return None
 
     def update_node_heartbeat(self, sys_id, status="online"):
         """生存報告（Heartbeat）の更新"""
