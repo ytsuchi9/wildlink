@@ -56,10 +56,10 @@ def udp_receiver(port):
             pass
 
 def generate_mjpeg(port):
-    """MJPEGストリームを生成（強制切断検知 + タイムアウト付き）"""
+    """MJPEGストリームを生成（パケット途絶で自動切断し、ブラウザにリロードを促す）"""
     print(f"🎬 [WMP RX] Client connected to port {port}")
     last_frame_hash = None
-    last_access = time.time()
+    last_packet_time = time.time() # 💡 最後にパケットを受け取った時刻
     
     try:
         while True:
@@ -69,23 +69,24 @@ def generate_mjpeg(port):
             if frame:
                 current_hash = hash(frame)
                 if current_hash != last_frame_hash:
+                    # 💡 新しいフレームが来たので、時刻を更新
                     last_frame_hash = current_hash
-                    last_access = current_time # データが来た時間を記録
+                    last_packet_time = current_time 
+                    
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
             
-            # 💡 対策：10秒以上データが来ない、またはクライアントが反応しない場合は
-            # ダミーの境界線を送ることで、Flaskに切断を検知させる
-            if current_time - last_access > 10.0:
-                yield b'--frame\r\n\r\n' # 空のデータを送って生存確認
-                last_access = current_time
+            # 💡 対策：3秒間パケットが届かなければ、ストリームを強制終了する
+            # これにより、ブラウザ側で「画像が壊れた」または「接続が切れた」と認識させます
+            if current_time - last_packet_time > 3.0:
+                print(f"⚠️ [WMP RX] Timeout on port {port}. Closing stream to client.")
+                break # ループを抜けて Response を終了させる
 
-            time.sleep(0.05) # 約20fps
+            time.sleep(0.05) 
             
-    except (GeneratorExit, Exception):
-        print(f"🛑 [WMP RX] Client disconnected from port {port}")
-        # 💡 重要：切断されたら、そのポートの古いフレームを消去して
-        # 次の接続時に古い絵が出ないようにする
+    except (GeneratorExit, Exception) as e:
+        print(f"🛑 [WMP RX] Client connection error on {port}: {e}")
+    finally:
         if port in frame_buffers:
             frame_buffers[port] = None
 

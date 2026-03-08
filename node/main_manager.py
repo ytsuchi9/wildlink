@@ -19,18 +19,21 @@ class MainManager:
         self.node_id = node_id
         self.db = DBBridge()
         self.units = {}
-        self.mqtt = None
-        self.last_sync_time = 0
-        self.sync_interval = 30  # DB同期とレポートの周期
-        self.current_config_raw = ""
-        self.active_timers = {}
-        self.config_cache_path = os.path.join(current_dir, "last_config.json")
+        self.links = []          
+        self.active_timers = {}  
+        self.current_config_raw = ""  
+        
+        # 💡 追加：同期タイミングの管理用
+        self.last_sync_time = 0      # 初回実行を確実にするため 0
+        self.sync_interval = 30      # 30秒ごとにDBと同期
+        
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.config_cache_path = os.path.join(base_dir, 'last_config.json')
 
     def setup_mqtt(self):
         host = os.getenv('MQTT_BROKER') or "192.168.1.102"
         self.mqtt = MQTTClient(host, self.node_id)
         if self.mqtt.connect():
-            # 全コマンド購読 (vst/node_001/cmd/+)
             cmd_topic = f"vst/{self.node_id}/cmd/+" 
             self.mqtt.client.subscribe(cmd_topic)
             self.mqtt.client.on_message = self.on_mqtt_message
@@ -43,22 +46,15 @@ class MainManager:
             cmd_id = payload.get("cmd_id")
             res_topic = f"vst/{self.node_id}/res"
 
-            # 1. 受領報告 (Ack)
             if cmd_id:
-                self.mqtt.client.publish(res_topic, json.dumps({
-                    "cmd_id": cmd_id, "val_status": "acked"
-                }))
+                self.mqtt.client.publish(res_topic, json.dumps({"cmd_id": cmd_id, "val_status": "acked"}))
 
-            # 2. 実行
             if target in self.units:
                 try:
-                    self.units[target].control(payload)
+                    self.units[target].execute_logic(payload) # execute_logicに統一
                     if cmd_id:
-                        # 成功時の詳細レスポンス
                         self.mqtt.client.publish(res_topic, json.dumps({
-                            "cmd_id": cmd_id,
-                            "val_status": "success",
-                            "log_code": 200,
+                            "cmd_id": cmd_id, "val_status": "success", "log_code": 200,
                             "target_status": getattr(self.units[target], 'val_status', 'unknown')
                         }))
                 except Exception as unit_e:
@@ -66,122 +62,163 @@ class MainManager:
                         self.mqtt.client.publish(res_topic, json.dumps({
                             "cmd_id": cmd_id, "val_status": "error", "log_code": 500, "log_msg": str(unit_e)
                         }))
-            
             elif target == "manager" and payload.get("action") == "reload":
                 self.load_and_init_units()
-                if cmd_id:
-                    self.mqtt.client.publish(res_topic, json.dumps({
-                        "cmd_id": cmd_id, "val_status": "success", "log_code": 200, "log_msg": "Manager reloaded"
-                    }))
 
         except Exception as e:
             print(f"❌ [MQTT] Error: {e}")
 
-    def send_report(self):
-        """バイタルデータとユニット状態を分けて報告"""
-        if not self.mqtt: return
+    def load_and_init_units(self):
+        """DBから最新設定を読み込み、キャッシュと比較して変更があれば反映"""
+        # 1. DBから最新情報を取得
+        new_configs = self.db.fetch_node_config(self.node_id)
+        new_links = self.db.fetch_vst_links(self.node_id) # 💡追加：リンク情報
         
-        # 将来的にはRTCなどから board_t を取得するが、今はダミー
-        report = {
-            "sys_monitor": {
-                "sys_cpu_t": self._get_cpu_temp(),
-                "sys_board_t": 35.5, # 例: RTCや他センサーの温度
-                "net_rssi": -45.0,    # 例: 実際はコマンド等で取得
-                "log_msg": "Healthy"
-            },
-            # "units": {role: unit.status_dict for role, unit in self.units.items()}
-            # 修正後：status_dict が無くてもエラーにならないようにガードをかける
-            "units": {
-                role: getattr(unit, "status_dict", {"val_status": "loaded", "log_msg": "no status info"}) 
-                for role, unit in self.units.items()
-            }
+        # 2. ネットワークエラー時のフォールバック (DBがNoneの場合)
+        if new_configs is None:
+            if os.path.exists(self.config_cache_path):
+                print("⚠️ [Manager] DB connection failed. Loading from cache...")
+                with open(self.config_cache_path, 'r') as f:
+                    cached_data = json.load(f)
+                    new_configs = cached_data.get("configs", [])
+                    new_links = cached_data.get("links", [])
+            else:
+                return
+
+        # 3. 差分チェック用のデータ構造を作成
+        # ユニット構成とリンク設定の両方を一つの辞書にまとめる
+        current_data_set = {
+            "configs": new_configs,
+            "links": new_links
         }
         
-        self.mqtt.publish(f"vst/{self.node_id}/report", report)
-        print(f"📊 [Manager] Report sent.")
+        # JSON文字列化して、前回保存した状態と比較
+        new_config_raw = json.dumps(current_data_set, sort_keys=True, default=str)
+        if new_config_raw == self.current_config_raw:
+            return # 変更がなければ何もしない（運用中のストリーミングを止めないため）
 
-    def _get_cpu_temp(self):
-        try:
-            with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
-                return float(f.read()) / 1000.0
-        except: return 0.0
-
-    def load_and_init_units(self):
-        """DBから最新設定を読み込み、変更があれば反映"""
-        configs = self.db.fetch_node_config(self.node_id)
-        if not configs:
-            if not self.units and os.path.exists(self.config_cache_path):
-                with open(self.config_cache_path, 'r') as f: configs = json.load(f)
-            else: return
-
-        new_config_raw = json.dumps(configs, sort_keys=True, default=str)
-        if new_config_raw == self.current_config_raw: return 
-
-        self.current_config_raw = new_config_raw
-        with open(self.config_cache_path, 'w') as f: json.dump(configs, f)
+        # --- 変更があった場合の処理 ---
+        print("🔄 [Manager] Config/Links change detected. Synchronizing...")
         
-        print("🔄 [Manager] Config change detected. Reloading...")
-        for t in self.active_timers.values(): t.cancel()
+        # キャッシュの更新
+        self.current_config_raw = new_config_raw
+        self.links = new_links  # 💡追加：メモリ上のリンク情報を更新
+        with open(self.config_cache_path, 'w') as f:
+            json.dump(current_data_set, f)
+        
+        # 4. 既存ユニットの安全な停止
+        # タイマーを止めないと、再初期化後に古いタイマーが発動してエラーになる
+        for t in self.active_timers.values(): 
+            t.cancel()
         self.active_timers.clear()
         
+        # 各ユニットのストリーミングやスレッドを停止
         for unit in self.units.values():
-            if hasattr(unit, 'stop'): unit.stop()
+            if hasattr(unit, 'stop'): 
+                unit.stop()
         self.units.clear()
         
+        # GPIOをリセットしてピン競合を防ぐ
         GPIO.cleanup()
         GPIO.setmode(GPIO.BCM)
 
-        for cfg in configs:
-            role, mod, cls, params = cfg['vst_type'], cfg['vst_module'], cfg['vst_class'], cfg['val_params']
+        # 5. DBの定義に基づいたユニットの再生成
+        for cfg in new_configs:
+            role = cfg['vst_type']
+            cls_name = cfg['vst_class']
+            mod_name = cfg.get('vst_module', f"vst_{cls_name.lower()}")
+            params = cfg.get('val_params', {})
+            
+            # 新設計のカラムを辞書にまとめる
+            unit_config = {
+                "hw_driver": cfg.get("hw_driver"),
+                "hw_bus_addr": cfg.get("hw_bus_addr"),
+                "vst_role_name": cfg.get("vst_role_name")
+            }
+
             try:
-                module = __import__(f"node.{mod}", fromlist=[f"VST_{cls}"])
-                vst_class = getattr(module, f"VST_{cls}")
-                self.units[role] = vst_class(role, params, self.mqtt, self.on_event)
-                print(f"✅ [{role}] Loaded")
-            except Exception as e: print(f"❌ [{role}] Load failed: {e}")
+                # 動的インポート
+                module = __import__(f"node.{mod_name}", fromlist=[f"VST_{cls_name}"])
+                vst_class = getattr(module, f"VST_{cls_name}")
+                
+                # 新旧クラス互換性チェック
+                import inspect
+                sig = inspect.signature(vst_class.__init__)
+                if 'config' in sig.parameters:
+                    # 新しい config 引数対応クラス
+                    self.units[role] = vst_class(role, params, self.mqtt, self.on_event, config=unit_config)
+                else:
+                    # 移行期間用の旧クラス対応
+                    self.units[role] = vst_class(role, params, self.mqtt, self.on_event)
+                
+                print(f"✅ [{role}] Activated ({unit_config['hw_driver']} @ {unit_config['hw_bus_addr']})")
+            except Exception as e: 
+                print(f"❌ [{role}] Activation failed: {e}")
 
     def on_event(self, source_role, event_type):
-        """ユニット間連携 (Button -> Camera など)"""
-        source_unit = self.units.get(source_role)
-        if not source_unit: return
-        target_role = source_unit.params.get("act_target")
-        duration = source_unit.params.get("val_interval", 30)
+        """
+        vst_links に基づいてイベントを配信する
+        """
+        print(f"🔔 [Event] Source: {source_role} Type: {event_type}")
         
-        if target_role in self.units:
-            target_unit = self.units[target_role]
-            new_run = False
-            if event_type == "button_pressed":
-                new_run = not getattr(target_unit, "act_run", False)
-            elif event_type == "motion_detected":
-                new_run = True
+        # メモリ上の links から合致するものを探す
+        matched_links = [l for l in self.links if l['source_role'] == source_role]
+        
+        if not matched_links:
+            print(f"⚠️ [Manager] No links found for {source_role}. Ignoring.")
+            return
+
+        for link in matched_links:
+            target_role = link['target_role']
+            duration = link['val_interval']
             
-            target_unit.control({"act_run": new_run})
-            if target_role in self.active_timers: self.active_timers[target_role].cancel()
-            if new_run and duration > 0:
-                t = threading.Timer(duration, lambda: target_unit.control({"act_run": False}))
-                t.daemon = True
-                self.active_timers[target_role] = t
-                t.start()
+            if target_role in self.units:
+                target_unit = self.units[target_role]
+                # 現在の状態を取得 (act_run属性がある前提)
+                is_active = getattr(target_unit, "act_run", False)
+                
+                # val_interval が 0 ならトグル、それ以外は一定時間ON
+                new_run = not is_active if duration == 0 else True
+                
+                print(f"➡️ [Route] {source_role} -> {target_role} (Action: {'TOGGLE' if duration == 0 else 'ON'})")
+                target_unit.execute_logic({"act_run": new_run})
+                
+                # タイマー制御 (ONにする場合のみ)
+                if target_role in self.active_timers:
+                    self.active_timers[target_role].cancel()
+                
+                if new_run and duration > 0:
+                    t = threading.Timer(duration, lambda r=target_role: self.units[r].execute_logic({"act_run": False}))
+                    t.daemon = True
+                    self.active_timers[target_role] = t
+                    t.start()
 
     def run(self):
         self.setup_mqtt()
+        # 💡 MQTTの受信待機スレッドを開始（これがないと on_mqtt_message が呼ばれません）
+        self.mqtt.client.loop_start() 
+        
+        # 初回ロード
         self.load_and_init_units()
-        print(f"🚀 Node {self.node_id} is running.")
+        
         try:
             while True:
                 now = time.time()
-                # 30秒おきに同期とレポート
+                # 定期同期（ハートビートと設定確認）
                 if now - self.last_sync_time > self.sync_interval:
                     self.db.update_node_heartbeat(self.node_id, status="online")
                     self.load_and_init_units() 
-                    self.send_report()
                     self.last_sync_time = now
-
+                
+                # 各ユニットのポーリング（スイッチのチャタリング防止など）
                 for unit in self.units.values():
-                    if hasattr(unit, 'poll'): unit.poll()
+                    if hasattr(unit, 'poll'): 
+                        unit.poll()
+                
                 time.sleep(0.1)
-        except KeyboardInterrupt: 
-            print("\n👋 Manager shutting down...")
+        except KeyboardInterrupt:
+            print("\n👋 Stopping Manager...")
+            self.mqtt.client.loop_stop()
             GPIO.cleanup()
 
 if __name__ == "__main__":

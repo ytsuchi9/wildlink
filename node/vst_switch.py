@@ -1,42 +1,39 @@
-# /opt/wildlink/node/vst_switch.py
-
 import RPi.GPIO as GPIO
 import time
 
 class VST_Switch:
-    def __init__(self, role, params, mqtt, on_event):
+    # 💡 config引数を受け取れるように拡張
+    def __init__(self, role, params, mqtt, on_event, config=None):
         self.role = role
         self.params = params
         self.mqtt = mqtt
         self.on_event = on_event
+        
+        # 💡 DBの新しいカラム hw_bus_addr 等からピンを取るロジックに合わせる
+        # なければ val_params から取る
         self.hw_pin = params.get("hw_pin", 17)
+        if config and config.get("hw_bus_addr"):
+            try:
+                self.hw_pin = int(config["hw_bus_addr"])
+            except: pass
         
         # GPIO設定
-        GPIO.setwarnings(False) # 警告を抑制
         GPIO.setup(self.hw_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        
-        # 前回の状態を保持（プルアップなので初期値は1）
         self.prev_state = GPIO.input(self.hw_pin)
         self.last_debounce_time = 0
         
-        print(f"🔘 VST_Switch (High-speed Poll) initialized on Pin {self.hw_pin}")
+        print(f"🔘 VST_Switch [{self.role}] initialized on Pin {self.hw_pin}")
 
     def poll(self):
-        """MainManagerから0.1秒ごとに呼ばれる"""
         current_state = GPIO.input(self.hw_pin)
-        
-        # 状態が「1（離）」から「0（押）」に変わった瞬間を捉える
         if current_state == 0 and self.prev_state == 1:
             now = time.time()
-            # チャタリング防止（前回の検知から0.3秒以上経過しているか）
             if now - self.last_debounce_time > 0.3:
-                print(f"🔘 [Poll] Button pressed on Pin {self.hw_pin}")
+                # 💡 event_type を vst_links の 'button' と一致させる
                 if self.on_event:
-                    self.on_event(self.role, "button_pressed")
+                    self.on_event(self.role, "button") 
                 self.last_debounce_time = now
-        
         self.prev_state = current_state
 
     def stop(self):
-        """リロード時は特に追加処理なし（Managerのcleanupに任せる）"""
         pass

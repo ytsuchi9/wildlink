@@ -13,18 +13,24 @@ class VstManager {
         } catch (e) { console.error("Manager Init Error:", e); }
     }
 
+    // renderRack メソッドのみ抜粋・修正
     renderRack(configs) {
         const rack = document.getElementById('vst-rack');
         rack.innerHTML = '';
         configs.forEach(conf => {
+            // 表示名の決定：role_nameがあればそれを、なければ vst_type を大文字で使う
+            const displayName = conf.vst_role_name || conf.vst_type.toUpperCase();
+            // 物理接続情報 (18番ピン、0x40アドレスなど)
+            const hwInfo = conf.hw_bus_addr ? `(${conf.hw_bus_addr})` : '';
+
             // 1. 共通の枠（シャーシ）を作成
             const div = document.createElement('div');
             div.id = `plugin-${conf.vst_type}`;
             div.className = `vst-plugin`;
             div.innerHTML = `
                 <div class="plugin-header">
-                    <span>${conf.vst_class}</span>
-                    <span>${conf.vst_type.toUpperCase()}</span>
+                    <span title="${conf.vst_description || ''}">${conf.vst_class}</span>
+                    <span class="plugin-role">${displayName} <small>${hwInfo}</small></span>
                 </div>
                 <div class="plugin-content" id="content-${conf.vst_type}">
                     <div class="status-text" id="disp-${conf.vst_type}">OFFLINE</div>
@@ -37,8 +43,11 @@ class VstManager {
             let pluginInstance = null;
             if (conf.ui_component_type === 'camera') {
                 pluginInstance = new CameraUnit(conf, this);
+            } else if (conf.ui_component_type === 'sensor') {
+                // 今後追加する汎用センサーユニット（仮）
+                // pluginInstance = new SensorUnit(conf, this);
+                pluginInstance = { update: (data) => { console.log("Sensor update", data); } };
             } else {
-                // 将来的に SensorUnit などが増える場所
                 pluginInstance = { update: (data) => { console.log("Standard update", data); } };
             }
 
@@ -49,7 +58,7 @@ class VstManager {
                 instance: pluginInstance
             };
 
-            // 4. プラグイン独自の初期描画（ボタン配置など）
+            // 4. プラグイン独自の初期描画
             if (pluginInstance.initUI) pluginInstance.initUI();
         });
     }

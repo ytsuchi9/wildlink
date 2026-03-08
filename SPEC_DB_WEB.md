@@ -15,6 +15,21 @@ updated_at, datetime,                       最終更新（生存確認用）
 これも定期的に監視して本当の状態なのかを監視するとさらによいかもですね
 
 
+テーブル名役割性格device_catalogデバイスの辞書（SR501は人感、INA219は電力…）静的 / 定義node_configs「どのNodeに何を繋いだか」の構成図動的 / 構成vst_links「AがBならCせよ」という神経回路動的 / 論理node_status今、この瞬間の全ユニットの状態・計測値リアルタイム / 現状node_data過去の全計測値・ログのアーカイブ蓄積 / 履歴
+
+テーブル名,役割,性格
+device_catalog,デバイスの辞書（SR501は人感、INA219は電力…）,静的 / 定義
+node_configs,「どのNodeに何を繋いだか」の構成図,動的 / 構成
+vst_links,「AがBならCせよ」という神経回路,動的 / 論理
+node_status,今、この瞬間の全ユニットの状態・計測値,リアルタイム / 現状
+node_data,過去の全計測値・ログのアーカイブ,蓄積 / 履歴
+
+
+
+
+
+
+
 🚀 DBでUIプラグインを完全制御する設計案
 現状の vst-manager.js を以下のようにアップグレードすることで、ソースコードを一切触らずに新しいセンサーに対応できるようになります。
 
@@ -86,15 +101,42 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM device_catalog;
 +-------------------+--------------+------+-----+---------+-------+
 
 MariaDB [wildlink_db]> SHOW COLUMNS FROM node_configs;
-+-------------+-------------+------+-----+---------+----------------+
-| Field       | Type        | Null | Key | Default | Extra          |
-+-------------+-------------+------+-----+---------+----------------+
-| config_id   | int(11)     | NO   | PRI | NULL    | auto_increment |
-| sys_id      | varchar(50) | YES  | MUL | NULL    |                |
-| vst_type    | varchar(50) | YES  | MUL | NULL    |                |
-| val_params  | longtext    | YES  |     | NULL    |                |
-| val_enabled | tinyint(1)  | YES  |     | 1       |                |
-+-------------+-------------+------+-----+---------+----------------+
++-----------------+--------------+------+-----+---------+----------------+
+| Field           | Type         | Null | Key | Default | Extra          |
++-----------------+--------------+------+-----+---------+----------------+
+| config_id       | int(11)      | NO   | PRI | NULL    | auto_increment |
+| sys_id          | varchar(50)  | YES  | MUL | NULL    |                |
+| vst_type        | varchar(50)  | YES  | MUL | NULL    |                |
+| vst_role_name   | varchar(100) | YES  |     | NULL    |                |
+| vst_description | text         | YES  |     | NULL    |                |
+| val_unit_map    | longtext     | YES  |     | NULL    |                |
+| hw_driver       | varchar(50)  | YES  |     | NULL    |                |
+| hw_bus_addr     | varchar(20)  | YES  |     | NULL    |                |
+| val_params      | longtext     | YES  |     | NULL    |                |
+| val_enabled     | tinyint(1)   | YES  |     | 1       |                |
++-----------------+--------------+------+-----+---------+----------------+
+
+MariaDB [wildlink_db]> SHOW COLUMNS FROM vst_links;
++--------------+-------------+------+-----+---------------------+----------------+
+| Field        | Type        | Null | Key | Default             | Extra          |
++--------------+-------------+------+-----+---------------------+----------------+
+| id           | int(11)     | NO   | PRI | NULL                | auto_increment |
+| sys_id       | varchar(50) | NO   |     | NULL                |                |
+| source_role  | varchar(50) | NO   |     | NULL                |                |
+| target_role  | varchar(50) | NO   |     | NULL                |                |
+| event_type   | varchar(50) | YES  |     | any                 |                |
+| val_interval | int(11)     | YES  |     | 30                  |                |
+| val_enabled  | tinyint(1)  | YES  |     | 1                   |                |
+| created_at   | timestamp   | YES  |     | current_timestamp() |                |
++--------------+-------------+------+-----+---------------------+----------------+
+
+MariaDB [wildlink_db]> SELECT * FROM vst_links;
++----+----------+-------------+-------------+------------+--------------+-------------+---------------------+
+| id | sys_id   | source_role | target_role | event_type | val_interval | val_enabled | created_at          |
++----+----------+-------------+-------------+------------+--------------+-------------+---------------------+
+|  1 | node_001 | sw_stream   | cam_main    | button     |            0 |           1 | 2026-03-09 03:03:38 |
+|  2 | node_001 | sns_move    | cam_main    | motion     |           60 |           1 | 2026-03-09 03:03:38 |
++----+----------+-------------+-------------+------------+--------------+-------------+---------------------+
 
 MariaDB [wildlink_db]> SHOW COLUMNS FROM node_commands;
 +--------------+--------------+------+-----+----------------------+----------------+

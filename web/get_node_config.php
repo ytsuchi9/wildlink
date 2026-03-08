@@ -4,8 +4,10 @@ header('Content-Type: application/json');
 
 $node_id = $_GET['node_id'] ?? 'node_001';
 
-// dc.ui_component_type を追加して JOIN
-$sql = "SELECT nc.vst_type, dc.vst_class, dc.ui_component_type, nc.val_params, nc.val_enabled 
+// 新設したカラム (vst_role_name, vst_description, val_unit_map, hw_driver, hw_bus_addr) を追加
+$sql = "SELECT nc.vst_type, nc.vst_role_name, nc.vst_description, nc.val_unit_map, 
+               nc.hw_driver, nc.hw_bus_addr, dc.vst_class, dc.ui_component_type, 
+               nc.val_params, nc.val_enabled 
         FROM node_configs nc
         JOIN device_catalog dc ON nc.vst_type = dc.vst_type
         WHERE nc.sys_id = ?";
@@ -18,8 +20,9 @@ try {
     $configs = [];
     while ($row = $result->fetch_assoc()) {
         $row['val_params'] = json_decode($row['val_params'], true);
+        // JSON形式で追加した unit_map もデコードしておく
+        $row['val_unit_map'] = json_decode($row['val_unit_map'] ?? 'null', true);
         $row['val_enabled'] = (int)$row['val_enabled'];
-        // 文字列のまま ui_component_type を追加
         $configs[] = $row;
     }
     echo json_encode($configs);

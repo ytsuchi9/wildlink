@@ -6,15 +6,12 @@ from datetime import datetime
 
 class DBBridge:
     def __init__(self, dotenv_path=None):
-        # 1. パス解決
         if dotenv_path is None:
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            # commonフォルダの親にある.envを参照
             dotenv_path = os.path.join(os.path.dirname(current_dir), ".env")
         
         load_dotenv(dotenv_path)
         
-        # 2. 環境変数の取得
         self.host = os.getenv('DB_HOST') or os.getenv('MQTT_BROKER')
         self.user = os.getenv('DB_USER')
         self.password = os.getenv('DB_PASS')
@@ -24,11 +21,9 @@ class DBBridge:
              print(f"[DBBridge] ⚠️ WARNING: Host is None. Path: {dotenv_path}")
 
     def _get_connection(self):
-        """データベース接続を確立（タイムアウト5秒設定）"""
         if not self.host:
             raise ValueError("DBBridge Error: Host is not defined. Check .env path.")
         
-        # 毎回新しいコネクションを作成（Lost Connection対策）
         return mysql.connector.connect(
             host=self.host,
             user=self.user,
@@ -39,13 +34,23 @@ class DBBridge:
         )
 
     def fetch_node_config(self, node_id):
-        """ノードの構成情報を取得し、JSONを辞書に変換して返す"""
+        """ノードの構成情報を取得し、新設計カラム(hw_driver等)を含めて返す"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True)
             
+            # 💡 修正ポイント: SQLに新カラムを追加！
             query = """
-                SELECT c.vst_type, c.val_params, c.val_enabled, cat.vst_class, cat.vst_module
+                SELECT 
+                    c.vst_type, 
+                    c.val_params, 
+                    c.val_enabled, 
+                    c.vst_role_name, 
+                    c.hw_driver, 
+                    c.hw_bus_addr, 
+                    c.val_unit_map,
+                    cat.vst_class, 
+                    cat.vst_module
                 FROM node_configs c
                 JOIN device_catalog cat ON c.vst_type = cat.vst_type
                 WHERE c.sys_id = %s AND c.val_enabled = TRUE
@@ -56,18 +61,50 @@ class DBBridge:
             cursor.close()
             conn.close()
 
-            # val_params(JSON文字列) を Python辞書に変換
+            # JSON文字列を Python辞書にデコード
             for cfg in configs:
-                if cfg['val_params'] and isinstance(cfg['val_params'], str):
+                # val_params のデコード
+                if cfg.get('val_params') and isinstance(cfg['val_params'], str):
                     try:
                         cfg['val_params'] = json.loads(cfg['val_params'])
                     except json.JSONDecodeError:
-                        print(f"[DBBridge] ⚠️ JSON Decode Error for {cfg['vst_type']}")
+                        print(f"[DBBridge] ⚠️ JSON Decode Error (params) for {cfg['vst_type']}")
+                
+                # val_unit_map のデコード (新設計)
+                if cfg.get('val_unit_map') and isinstance(cfg['val_unit_map'], str):
+                    try:
+                        cfg['val_unit_map'] = json.loads(cfg['val_unit_map'])
+                    except json.JSONDecodeError:
+                        print(f"[DBBridge] ⚠️ JSON Decode Error (unit_map) for {cfg['vst_type']}")
             
             return configs
         except Exception as e:
             print(f"[DBBridge] Fetch Error: {e}")
             return None
+
+    def fetch_vst_links(self, node_id):
+        """ノードに関連するイベントリンク情報を取得（有効なもののみ）"""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # val_enabled = 1 のものだけを抽出して「隠しレコード」を無視
+            query = """
+                SELECT source_role, target_role, event_type, val_interval 
+                FROM vst_links 
+                WHERE sys_id = %s AND val_enabled = 1
+            """
+            cursor.execute(query, (node_id,))
+            links = cursor.fetchall()
+            
+            cursor.close()
+            conn.close()
+            return links
+        except Exception as e:
+            print(f"[DBBridge] Link Fetch Error: {e}")
+            return []
+
+    # --- 以下、変更なしのためメソッド名のみ維持（そのまま使ってください） ---
 
     def update_node_status(self, node_id, payload):
         """コマンド実行状態の更新（既存ロジック）"""
@@ -75,11 +112,9 @@ class DBBridge:
             conn = self._get_connection()
             cursor = conn.cursor()
             now = datetime.now()
-
             if "cmd_id" in payload:
                 cmd_id = payload["cmd_id"]
                 val_status = payload.get("val_status", "success")
-                
                 sql = """
                     UPDATE node_commands 
                     SET val_status = %s, 
@@ -88,7 +123,6 @@ class DBBridge:
                     WHERE id = %s
                 """
                 cursor.execute(sql, (val_status, now, val_status, now, cmd_id))
-
             cursor.close()
             conn.close()
             return True
@@ -97,33 +131,24 @@ class DBBridge:
             return False
 
     def save_log(self, sql, params):
-        """汎用ログ保存"""
         return self._execute(sql, params)
 
     def _execute(self, sql, params=None):
-        """UPDATE/INSERT/DELETE 実行用汎用メソッド"""
         try:
             conn = self._get_connection()
-            # 💡 buffered=True を追加して、応答をドライバ内で完結させる
             cursor = conn.cursor(buffered=True) 
             cursor.execute(sql, params or ())
-            
-            # 💡念のため、未読データがあれば消費する
             if cursor.with_rows:
                 cursor.fetchall()
-                
-            conn.commit() # 明示的にコミット
+            conn.commit()
             cursor.close()
             conn.close()
             return True
         except Exception as e:
-            # ここでエラーが出た際、SQLの中身も出すとデバッグが捗ります
             print(f"[DBBridge] Execute Error: {e} | SQL: {sql[:50]}...")
             return False
 
-    # 💡 SELECT用に新しくメソッドを追加（status_engine.pyの同期で使う用）
     def fetch_one(self, sql, params=None):
-        """1件取得用"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(buffered=True)
@@ -137,26 +162,20 @@ class DBBridge:
             return None
 
     def update_node_heartbeat(self, sys_id, status="online"):
-        """生存報告（Heartbeat）の更新"""
         query = "UPDATE nodes SET sys_status = %s, last_seen = NOW() WHERE sys_id = %s"
         return self._execute(query, (status, sys_id))
 
     def fetch_pending_commands(self, node_id=None):
-        """val_statusが 'pending' のコマンドを取得する"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True)
-            
-            # DBのカラム名 val_status に合わせる
             query = "SELECT * FROM node_commands WHERE val_status = 'pending'"
             params = []
             if node_id:
-                query += " AND sys_id = %s" # カラム名が sys_id なので修正
+                query += " AND sys_id = %s"
                 params.append(node_id)
-            
             cursor.execute(query, params)
             result = cursor.fetchall()
-            
             cursor.close()
             conn.close()
             return result
@@ -165,19 +184,9 @@ class DBBridge:
             return []
 
     def update_command_status(self, cmd_id, status):
-        """
-        コマンドのステータスと、各フェーズの時刻(sent_at, acked_at, completed_at)を更新する
-        """
-        # ステータスと更新カラムの判定
         column_update = ""
-        if status == "sent":
-            column_update = ", sent_at = NOW(3)"
-        elif status == "acked":
-            column_update = ", acked_at = NOW(3)"
-        elif status == "completed":
-            column_update = ", completed_at = NOW(3)"
-
-        # カラム名を val_status に合わせる
+        if status == "sent": column_update = ", sent_at = NOW(3)"
+        elif status == "acked": column_update = ", acked_at = NOW(3)"
+        elif status == "completed": column_update = ", completed_at = NOW(3)"
         query = f"UPDATE node_commands SET val_status = %s {column_update} WHERE id = %s"
-        
         return self._execute(query, (status, cmd_id))
