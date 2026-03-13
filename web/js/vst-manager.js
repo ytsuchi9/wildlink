@@ -18,6 +18,13 @@ class VstManager {
         const rack = document.getElementById('vst-rack');
         rack.innerHTML = '';
         configs.forEach(conf => {
+            // --- 💡 修正箇所：PHPですでにデコード済みなので、存在確認だけでOK ---
+            // もし PHP側がデコードに失敗して null を返していても、空のオブジェクトを代入して
+            // CameraUnit 等の初期化でエラーが起きないようにガードします。
+            conf.val_params = conf.val_params || {}; 
+            conf.val_unit_map = conf.val_unit_map || {};
+            // -----------------------------------------------------------
+            
             // 表示名の決定：role_nameがあればそれを、なければ vst_type を大文字で使う
             const displayName = conf.vst_role_name || conf.vst_type.toUpperCase();
             // 物理接続情報 (18番ピン、0x40アドレスなど)

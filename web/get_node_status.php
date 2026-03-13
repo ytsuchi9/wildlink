@@ -34,7 +34,12 @@ try {
     $stmt_v = $mysqli->prepare($sql_v);
     $stmt_v->bind_param("s", $node_id);
     $stmt_v->execute();
-    $vitals = $stmt_v->get_result()->fetch_assoc();
+    $vitals_row = $stmt_v->get_result()->fetch_assoc();
+    // データがない場合は '--' を入れた連想配列を代入して、JS側のエラーを防ぐ
+    $vitals = $vitals_row ?: [
+        'sys_cpu_t' => '--',
+        'net_rssi' => '--'
+    ];
 
     // --- 2. ユニット状態の結合取得 (node_configs + node_status_current) ---
     $sql_s = "

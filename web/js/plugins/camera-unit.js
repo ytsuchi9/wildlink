@@ -4,11 +4,12 @@ class CameraUnit {
         this.manager = manager;
         this.name = conf.vst_type;
         
-        // 💡 ハードコード排除：設定値から取得、なければ現在のホスト(Hub)のIPをベースにする
-        // conf.val_params は VstManager 内で JSON.parse 済みである前提
         const params = conf.val_params || {};
         this.streamHost = params.host || window.location.hostname; 
-        this.streamPort = params.port || "8080";
+        
+        // 💡 修正: params.port ではなく params.net_port を参照
+        // 💡 さらに MJPEG Bridge は 8080 で待ち受けているので、ここは 8080 固定が正解
+        this.streamPort = "8080"; 
     }
 
     // 初期UI構築（ボタンなど）
@@ -88,7 +89,13 @@ class CameraUnit {
             const formData = new URLSearchParams();
             formData.append('node_id', NODE_ID); 
             formData.append('cmd_type', 'vst_control');
-            formData.append('cmd_json', JSON.stringify({ "action": action, "target": target }));
+
+            // 💡 修正：統一基準に基づき "action": "start" ではなく "act_run": true を送る
+            const cmdData = { 
+                "target": target,
+                "act_run": (action === 'start') // startならtrue, stopならfalse
+            };
+            formData.append('cmd_json', JSON.stringify(cmdData));
 
             const res = await fetch('send_cmd.php', { method: 'POST', body: formData });
             const data = await res.json();

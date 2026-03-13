@@ -42,7 +42,7 @@ class VST_Camera(WildLinkVSTBase):
     def status_dict(self):
         return {
             "val_status": self.val_status,
-            "act_stream": self.act_run,
+            "act_run": self.act_run, # 💡 修正：act_stream ではなく act_run に統一
             "log_msg": f"Streaming via {self.hw_driver}" if self.act_run else "Ready"
         }
 
