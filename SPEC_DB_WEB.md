@@ -83,6 +83,7 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM nodes;
 | hw_pwr_src    | varchar(20)   | YES  |     | NULL                |                               |
 | net_ip        | varchar(15)   | YES  |     | NULL                |                               |
 | sys_status    | varchar(20)   | YES  |     | NULL                |                               |
+| val_log_level | varchar(20)   | YES  |     | info                |                               |
 | val_ui_layout | longtext      | YES  |     | NULL                |                               |
 | log_note      | text          | YES  |     | NULL                |                               |
 | last_seen     | timestamp     | YES  |     | current_timestamp() | on update current_timestamp() |
@@ -172,6 +173,7 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM system_logs;
 +-------------+-------------+------+-----+---------------------+----------------+
 | id          | int(11)     | NO   | PRI | NULL                | auto_increment |
 | sys_id      | varchar(50) | YES  | MUL | NULL                |                |
+| log_type    | varchar(50) | YES  |     | NULL                |                |
 | log_level   | varchar(20) | YES  |     | info                |                |
 | log_code    | int(11)     | YES  |     | 0                   |                |
 | sys_volt    | float       | YES  |     | NULL                |                |
