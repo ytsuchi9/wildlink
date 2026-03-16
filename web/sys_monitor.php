@@ -114,53 +114,62 @@
     }
 
     // --- 2. ステータスカードの取得と反映 ---
-    async function fetchStatusCards() {
-        try {
-            const response = await fetch('api_status_cards.php');
-            const nodes = await response.json();
-            const container = document.getElementById('node-cards');
-            
-            container.innerHTML = '';
-            nodes.forEach(node => {
-                const isOnline = node.val_status === 'online';
-                const statusClass = isOnline ? 'online' : 'offline';
+        async function fetchStatusCards() {
+            try {
+                const response = await fetch('api_status_cards.php');
+                const nodes = await response.json();
+                const container = document.getElementById('node-cards');
                 
-                const cardHtml = `
-                    <div class="col-md-3 col-sm-6 mb-3">
-                        <div class="card card-node p-3 h-100">
-                            <div class="d-flex justify-content-between align-items-start mb-3">
-                                <div>
-                                    <div class="vital-label">Node ID</div>
-                                    <div class="fw-bold fs-5">${node.sys_id}</div>
+                container.innerHTML = '';
+                nodes.forEach(node => {
+                    // 不整合修正: api_status_cards.php が返す最新のキー名に合わせる
+                    const isOnline = node.sys_status === 'online'; 
+                    const statusClass = isOnline ? 'online' : 'offline';
+                    
+                    // カード全体をリンク化するためのURL
+                    const consoleUrl = `camviewer.html?sys_id=${node.sys_id}`;
+
+                    const cardHtml = `
+                        <div class="col-md-3 col-sm-6 mb-3">
+                            <a href="${consoleUrl}" class="text-decoration-none text-dark">
+                                <div class="card card-node p-3 h-100 shadow-sm" style="cursor: pointer; transition: transform 0.2s;">
+                                    <div class="d-flex justify-content-between align-items-start mb-3">
+                                        <div>
+                                            <div class="vital-label">Node ID</div>
+                                            <div class="fw-bold fs-5 text-primary">${node.sys_id}</div>
+                                        </div>
+                                        <span class="badge bg-light text-dark border">${node.val_log_level}</span>
+                                    </div>
+                                    <div class="mb-3">
+                                        <span class="status-dot ${statusClass}"></span>
+                                        <span class="fw-bold text-uppercase">${node.sys_status}</span>
+                                    </div>
+                                    <div class="row g-0 border-top pt-2">
+                                        <div class="col-6 border-end text-center">
+                                            <div class="vital-label">CPU Temp</div>
+                                            <div class="vital-value">${node.sys_cpu_t ? parseFloat(node.sys_cpu_t).toFixed(1) + '°C' : '--'}</div>
+                                        </div>
+                                        <div class="col-6 text-center">
+                                            <div class="vital-label">RSSI</div>
+                                            <div class="vital-value">${node.net_rssi || '--'}<small class="fs-6 ps-1">dBm</small></div>
+                                        </div>
+                                    </div>
+                                    <div class="mt-2 text-center border-top pt-1">
+                                        <small class="text-muted" style="font-size: 0.7rem;">Last Seen: ${node.last_seen || 'Never'}</small>
+                                    </div>
+                                    <div class="mt-1 text-center">
+                                        <span class="badge bg-info text-white" style="font-size: 0.6rem;">OPEN CONSOLE</span>
+                                    </div>
                                 </div>
-                                <span class="badge bg-light text-dark border">${node.val_log_level}</span>
-                            </div>
-                            <div class="mb-3">
-                                <span class="status-dot ${statusClass}"></span>
-                                <span class="fw-bold text-uppercase">${node.val_status}</span>
-                            </div>
-                            <div class="row g-0 border-top pt-2">
-                                <div class="col-6 border-end text-center">
-                                    <div class="vital-label">CPU Temp</div>
-                                    <div class="vital-value">${node.cpu_t ? parseFloat(node.cpu_t).toFixed(1) + '°C' : '--'}</div>
-                                </div>
-                                <div class="col-6 text-center">
-                                    <div class="vital-label">RSSI</div>
-                                    <div class="vital-value">${node.rssi || '--'}<small class="fs-6 ps-1">dBm</small></div>
-                                </div>
-                            </div>
-                            <div class="mt-2 text-center">
-                                <small class="text-muted" style="font-size: 0.7rem;">Seen: ${node.last_seen || 'Never'}</small>
-                            </div>
+                            </a>
                         </div>
-                    </div>
-                `;
-                container.innerHTML += cardHtml;
-            });
-        } catch (error) {
-            console.error('Status Card Error:', error);
+                    `;
+                    container.innerHTML += cardHtml;
+                });
+            } catch (error) {
+                console.error('Status Card Error:', error);
+            }
         }
-    }
 
     // --- 共通ツール ---
     function escapeHtml(str) {

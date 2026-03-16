@@ -78,7 +78,7 @@ class CameraUnit {
         document.getElementById(`disp-${this.name}`).style.fontSize = "1.1rem";
     }
 
-    // static sendCmd 内の NODE_ID は camviewer.html で定義されているグローバル変数を使用
+    // static sendCmd 内の SYS_ID は camviewer.html で定義されているグローバル変数を使用
     static async sendCmd(target, action) {
         const btn = event.target;
         const originalText = btn.innerText;
@@ -87,18 +87,24 @@ class CameraUnit {
 
         try {
             const formData = new URLSearchParams();
-            formData.append('node_id', NODE_ID); 
+            
+            // 💡 修正: camviewer.html で定義した変数名 (sys_ID) を使用
+            // 💡 かつ、送信キーも sys_id に統一
+            formData.append('sys_id', sys_ID); 
             formData.append('cmd_type', 'vst_control');
 
-            // 💡 修正：統一基準に基づき "action": "start" ではなく "act_run": true を送る
             const cmdData = { 
                 "target": target,
-                "act_run": (action === 'start') // startならtrue, stopならfalse
+                "act_run": (action === 'start')
             };
             formData.append('cmd_json', JSON.stringify(cmdData));
 
+            // send_cmd.php へのリクエスト
             const res = await fetch('send_cmd.php', { method: 'POST', body: formData });
             const data = await res.json();
+            
+            if (data.error) throw new Error(data.error);
+            
             const cmdId = data.command_id;
 
             const track = async () => {

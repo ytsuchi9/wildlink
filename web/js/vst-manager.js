@@ -6,7 +6,7 @@ class VstManager {
 
     async init() {
         try {
-            const res = await fetch(`get_node_config.php?node_id=${this.nodeId}`);
+            const res = await fetch(`get_node_config.php?sys_id=${this.nodeId}`);
             const configs = await res.json();
             this.renderRack(configs);
             this.startLoop();
@@ -77,33 +77,42 @@ class VstManager {
 
     async refresh() {
         try {
-            const res = await fetch(`get_node_status.php?node_id=${this.nodeId}`);
+            // 1. sys_id でリクエスト
+            const res = await fetch(`get_node_status.php?sys_id=${this.nodeId}`);
             const data = await res.json();
             
-            // 1. バイタル更新（マネージャーが直接担当）
+            // 2. バイタルの更新（データがある時だけ実行）
             if (data.vitals) {
-                document.getElementById('vital-cpu').innerText = data.vitals.sys_cpu_t || '--';
-                document.getElementById('vital-rssi').innerText = data.vitals.net_rssi || '--';
-                document.getElementById('vital-time').innerText = data.server_time || '--:--:--';
+                const v = data.vitals;
+                if(document.getElementById('vital-cpu')) document.getElementById('vital-cpu').innerText = v.sys_cpu_t || '--';
+                if(document.getElementById('vital-rssi')) document.getElementById('vital-rssi').innerText = v.net_rssi || '--';
+                if(document.getElementById('vital-up')) document.getElementById('vital-up').innerText = v.sys_up || '--';
+                if(document.getElementById('vital-time')) document.getElementById('vital-time').innerText = v.last_seen || '--:--:--';
             }
 
-            // 2. プラグインへの通知
-            if (data.unit_statuses) {
-                for (const [name, status] of Object.entries(data.unit_statuses)) {
-                    if (this.units[name] && this.units[name].instance) {
-                        
-                        // そのユニットに関連する環境データがあれば一緒に渡してあげる
-                        // 例えば cam_main のパケットの中に env_lux 等が含まれている可能性を考慮
-                        const payload = {
-                            val_status: status,
-                            env: data.env_data // センサーデータ一式を丸ごと渡す
-                        };
-
-                        // 各プラグイン（CameraUnit, SensorUnit等）のupdateを叩く
-                        this.units[name].instance.update(payload);
-                    }
+            // 3. ユニット状態の更新
+            // unit_statuses があればそれを使う、なければ全体の sys_status で代用
+            const statuses = data.unit_statuses || {};
+            
+            Object.keys(this.units).forEach(name => {
+                const unit = this.units[name];
+                // 個別のステータスがあればそれを、なければ全体の sys_status を採用
+                const currentStatus = statuses[name] || data.sys_status || 'offline';
+                
+                const payload = {
+                    val_status: currentStatus,
+                    env: data.env_data || {} // もし環境数値があれば
+                };
+                
+                // ここで各プラグイン（CameraUnitなど）の update を呼ぶ
+                if (unit.instance && typeof unit.instance.update === 'function') {
+                    unit.instance.update(payload);
                 }
-            }
-        } catch (e) { console.error("Refresh Error:", e); }
+            });
+
+        } catch (e) { 
+            console.error("Refresh Error:", e);
+            // エラーが起きてもループを止めないためにあえて何もしない
+        }
     }
 }
