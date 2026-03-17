@@ -19,8 +19,9 @@ from common.logger_config import get_logger
 logger = get_logger("main_manager")
 
 class MainManager:
-    def __init__(self, node_id):
-        self.node_id = node_id
+    def __init__(self, sys_id):
+        # node_id から sys_id へ名称統一
+        self.sys_id = sys_id
         self.db = DBBridge()
         self.units = {}
         self.links = []          
@@ -35,9 +36,11 @@ class MainManager:
 
     def setup_mqtt(self):
         host = os.getenv('MQTT_BROKER') or "192.168.1.102"
-        self.mqtt = MQTTClient(host, self.node_id)
+        # 接続用クライアントIDも sys_id を使用
+        self.mqtt = MQTTClient(host, self.sys_id)
         if self.mqtt.connect():
-            cmd_topic = f"vst/{self.node_id}/cmd/+" 
+            # 購読トピックを 2026年規格の sys_id パスへ
+            cmd_topic = f"vst/{self.sys_id}/cmd/+" 
             self.mqtt.client.subscribe(cmd_topic)
             self.mqtt.client.on_message = self.on_mqtt_message
             logger.info(f"📡 MQTT Connected & Subscribed to {cmd_topic}")
@@ -47,24 +50,38 @@ class MainManager:
             payload = json.loads(msg.payload.decode())
             target = payload.get("target")
             cmd_id = payload.get("cmd_id")
-            res_topic = f"vst/{self.node_id}/res"
+            # 応答トピックも sys_id に統一
+            res_topic = f"vst/{self.sys_id}/res"
 
             if cmd_id:
-                self.mqtt.client.publish(res_topic, json.dumps({"cmd_id": cmd_id, "val_status": "acked"}))
+                # ACK (受け取った旨) を即座に返信
+                self.mqtt.client.publish(res_topic, json.dumps({
+                    "sys_id": self.sys_id,
+                    "cmd_id": cmd_id, 
+                    "val_status": "acked"
+                }))
 
             if target in self.units:
                 try:
                     self.units[target].execute_logic(payload)
                     if cmd_id:
+                        # 成功報告
                         self.mqtt.client.publish(res_topic, json.dumps({
-                            "cmd_id": cmd_id, "val_status": "success", "log_code": 200,
+                            "sys_id": self.sys_id,
+                            "cmd_id": cmd_id, 
+                            "val_status": "success", 
+                            "log_code": 200,
                             "target_status": getattr(self.units[target], 'val_status', 'unknown')
                         }))
                 except Exception as unit_e:
                     logger.error(f"❌ [{target}] Execution failed: {unit_e}")
                     if cmd_id:
                         self.mqtt.client.publish(res_topic, json.dumps({
-                            "cmd_id": cmd_id, "val_status": "error", "log_code": 500, "log_msg": str(unit_e)
+                            "sys_id": self.sys_id,
+                            "cmd_id": cmd_id, 
+                            "val_status": "error", 
+                            "log_code": 500, 
+                            "log_msg": str(unit_e)
                         }))
             elif target == "manager" and payload.get("action") == "reload":
                 logger.info("🔄 Reload command received via MQTT")
@@ -75,8 +92,9 @@ class MainManager:
 
     def load_and_init_units(self):
         """DBから最新設定を読み込み、キャッシュと比較して変更があれば反映"""
-        new_configs = self.db.fetch_node_config(self.node_id)
-        new_links = self.db.fetch_vst_links(self.node_id)
+        # 引数を sys_id に修正
+        new_configs = self.db.fetch_node_config(self.sys_id)
+        new_links = self.db.fetch_vst_links(self.sys_id)
         
         if new_configs is None:
             if os.path.exists(self.config_cache_path):
@@ -102,6 +120,7 @@ class MainManager:
         with open(self.config_cache_path, 'w') as f:
             json.dump(current_data_set, f)
         
+        # 既存ユニットとタイマーのクリーンアップ
         for t in self.active_timers.values(): 
             t.cancel()
         self.active_timers.clear()
@@ -114,6 +133,7 @@ class MainManager:
         GPIO.cleanup()
         GPIO.setmode(GPIO.BCM)
 
+        # ユニットの初期化
         for cfg in new_configs:
             role = cfg['vst_type']
             cls_name = cfg['vst_class']
@@ -132,6 +152,7 @@ class MainManager:
                 
                 import inspect
                 sig = inspect.signature(vst_class.__init__)
+                # ユニット側にも sys_id を渡す（必要なら）
                 if 'config' in sig.parameters:
                     self.units[role] = vst_class(role, params, self.mqtt, self.on_event, config=unit_config)
                 else:
@@ -175,12 +196,13 @@ class MainManager:
         self.mqtt.client.loop_start() 
         self.load_and_init_units()
         
-        logger.info(f"📡 Main Manager is running...")
+        logger.info(f"📡 Main Manager [{self.sys_id}] is running...")
         try:
             while True:
                 now = time.time()
                 if now - self.last_sync_time > self.sync_interval:
-                    self.db.update_node_heartbeat(self.node_id, status="online")
+                    # ハートビート更新
+                    self.db.update_node_heartbeat(self.sys_id, status="online")
                     self.load_and_init_units() 
                     self.last_sync_time = now
                 
@@ -195,6 +217,7 @@ class MainManager:
             GPIO.cleanup()
 
 if __name__ == "__main__":
-    node_id = os.getenv("SYS_ID", "node_001")
-    manager = MainManager(node_id)
+    # 環境変数から sys_id を取得。なければデフォルト node_001
+    sys_id = os.getenv("SYS_ID", "node_001")
+    manager = MainManager(sys_id)
     manager.run()

@@ -8,8 +8,13 @@ from common.vst_base import WildLinkVSTBase
 
 class VST_Camera(WildLinkVSTBase):
     def __init__(self, role, params, mqtt, event_callback=None, config=None):
+        # ベースクラスの初期化（sys_idの保持など）
         super().__init__(role, params, mqtt, event_callback)
         self.config = config or {}
+        
+        # 💡 重要：ベースクラスやManagerから引き継いだ sys_id を使用する
+        # もしベースクラスで保持していない場合は self.sys_id = params.get("sys_id", "node_001") 等で補完
+        self.sys_id = getattr(self, 'sys_id', os.getenv("SYS_ID", "node_001"))
 
         # 💡 DB設定からの反映
         self.hw_driver = self.config.get("hw_driver", "CSI_CAM")
@@ -27,7 +32,8 @@ class VST_Camera(WildLinkVSTBase):
         
         # WMPプロトコルヘッダー
         from common.wmp_core import WMPHeader
-        self.wmp = WMPHeader(node_id="node_001", media_type=2)
+        # 💡 修正：node_id を固定値から self.sys_id に変更
+        self.wmp = WMPHeader(node_id=self.sys_id, media_type=2)
         
         # 状態管理
         self.act_run = False 
@@ -36,13 +42,13 @@ class VST_Camera(WildLinkVSTBase):
         self.thread = None
         self.stop_event = threading.Event()
         
-        print(f"📷 [{self.role}] Camera VST Ready (Driver: {self.hw_driver} / Device: {self.hw_device})")
+        print(f"📷 [{self.role}] Camera VST Ready (Node: {self.sys_id} / Driver: {self.hw_driver})")
 
     @property
     def status_dict(self):
         return {
             "val_status": self.val_status,
-            "act_run": self.act_run, # 💡 修正：act_stream ではなく act_run に統一
+            "act_run": self.act_run,
             "log_msg": f"Streaming via {self.hw_driver}" if self.act_run else "Ready"
         }
 
@@ -104,7 +110,7 @@ class VST_Camera(WildLinkVSTBase):
                    "-i", self.hw_device, "-c:v", "copy", "-f", "mjpeg", "-an", "pipe:1"]
 
         try:
-            # 2. プロセス起動 (stderrを捨ててパイプを詰まらせない)
+            # 2. プロセス起動
             self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             
             # 3. パイプをノンブロッキングに設定
@@ -114,13 +120,11 @@ class VST_Camera(WildLinkVSTBase):
 
             buffer = b""
             while not self.stop_event.is_set():
-                # データの読み込み
                 try:
                     chunk = self.process.stdout.read(32768)
                     if chunk:
                         buffer += chunk
                     else:
-                        # プロセスが終了しているかチェック
                         if self.process.poll() is not None:
                             break
                         time.sleep(0.01)
@@ -137,13 +141,14 @@ class VST_Camera(WildLinkVSTBase):
                         frame = buffer[start:end+2]
                         # 配信フラグが立っている間のみ送信
                         if self.act_run:
+                            # 💡 wmpは __init__ で node_id=self.sys_id を設定済み
                             self.wmp.send_large_data(sock, dest_addr, frame, flags=1)
                         
                         buffer = buffer[end+2:]
                     else:
                         break
                 
-                # 異常なバッファ溜まりを防止 (1MB超えたらリセット)
+                # 異常なバッファ溜まりを防止
                 if len(buffer) > 1000000:
                     buffer = b""
 

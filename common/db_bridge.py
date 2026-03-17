@@ -39,7 +39,7 @@ class DBBridge:
 
     # --- 互換性維持のための汎用メソッド ---
     def _execute(self, sql, params=None):
-        """古いコードが内部で利用している汎用実行メソッド"""
+        """汎用実行メソッド"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(buffered=True)
@@ -65,7 +65,7 @@ class DBBridge:
             print(f"[DBBridge] FetchOne Error: {e}")
             return None
 
-    # --- ログ管理機能 (NEW) ---
+    # --- ログ管理機能 ---
     def insert_system_log(self, sys_id, log_type, level, msg, code=0, ext=None):
         """system_logsテーブルへログを保存"""
         sql = """
@@ -81,12 +81,12 @@ class DBBridge:
 
     # --- ステータス・ハートビート管理 ---
     def update_node_heartbeat(self, sys_id, status="online"):
-        """main_manager.py 等から呼ばれる生存報告"""
+        """生存報告。last_seen を現在時刻に更新"""
         query = "UPDATE nodes SET sys_status = %s, last_seen = NOW() WHERE sys_id = %s"
         return self._execute(query, (status, sys_id))
 
     def update_vst_status(self, sys_id, vst_type, status):
-        """node_status_current を更新"""
+        """node_status_current を更新。存在しなければ挿入"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
@@ -110,7 +110,8 @@ class DBBridge:
             return False
 
     # --- 構成情報取得 ---
-    def fetch_node_config(self, node_id):
+    def fetch_node_config(self, sys_id):
+        """指定された sys_id の有効なプラグイン構成を全取得"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True)
@@ -122,7 +123,7 @@ class DBBridge:
                 JOIN device_catalog cat ON c.vst_type = cat.vst_type
                 WHERE c.sys_id = %s AND c.val_enabled = TRUE
             """
-            cursor.execute(query, (node_id,))
+            cursor.execute(query, (sys_id,))
             configs = cursor.fetchall()
             cursor.close()
             for cfg in configs:
@@ -133,25 +134,26 @@ class DBBridge:
                         except: pass
             return configs
         except Exception as e:
-            print(f"[DBBridge] Fetch Error: {e}")
+            print(f"[DBBridge] fetch_node_config Error: {e}")
             return None
 
-    def fetch_vst_links(self, node_id):
+    def fetch_vst_links(self, sys_id):
+        """連動設定を習得"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True)
             query = "SELECT source_role, target_role, event_type, val_interval FROM vst_links WHERE sys_id = %s AND val_enabled = 1"
-            cursor.execute(query, (node_id,))
+            cursor.execute(query, (sys_id,))
             links = cursor.fetchall()
             cursor.close()
             return links
         except Exception as e:
-            print(f"[DBBridge] Link Fetch Error: {e}")
+            print(f"[DBBridge] fetch_vst_links Error: {e}")
             return []
 
     # --- コマンド履歴管理 ---
-    def update_node_status(self, node_id, payload):
-        """node_commands 履歴更新用"""
+    def update_node_status(self, sys_id, payload):
+        """node_commands 履歴更新。payload['cmd_id'] をキーに使用"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
@@ -164,24 +166,25 @@ class DBBridge:
                     SET val_status = %s, 
                         acked_at = IFNULL(acked_at, %s),
                         completed_at = CASE WHEN %s = 'success' THEN %s ELSE completed_at END
-                    WHERE id = %s
+                    WHERE id = %s AND sys_id = %s
                 """
-                cursor.execute(sql, (val_status, now, val_status, now, cmd_id))
+                cursor.execute(sql, (val_status, now, val_status, now, cmd_id, sys_id))
             cursor.close()
             return True
         except Exception as e:
             print(f"[DBBridge] update_node_status Error: {e}")
             return False
 
-    def fetch_pending_commands(self, node_id=None):
+    def fetch_pending_commands(self, sys_id=None):
+        """実行待ちコマンド(pending)を取得"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True)
             query = "SELECT * FROM node_commands WHERE val_status = 'pending'"
             params = []
-            if node_id:
+            if sys_id:
                 query += " AND sys_id = %s"
-                params.append(node_id)
+                params.append(sys_id)
             cursor.execute(query, params)
             result = cursor.fetchall()
             cursor.close()
@@ -191,6 +194,7 @@ class DBBridge:
             return []
 
     def update_command_status(self, cmd_id, status):
+        """コマンドの状態(pending -> sent -> acked -> completed)を更新"""
         column_update = ""
         if status == "sent": column_update = ", sent_at = NOW(3)"
         elif status == "acked": column_update = ", acked_at = NOW(3)"

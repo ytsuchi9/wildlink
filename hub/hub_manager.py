@@ -16,7 +16,7 @@ sys.path.append(common_path)
 from db_bridge import DBBridge
 from logger_config import get_logger
 
-# ロガーの初期化 (log_type="hub_manager" として登録されます)
+# ロガーの初期化
 logger = get_logger("hub_manager")
 
 class WildLinkHubManager:
@@ -26,29 +26,56 @@ class WildLinkHubManager:
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         
-        self.stream_process = None
-        self.rx_script_path = os.path.join(current_dir, "wmp_stream_rx.py")
+        # 子プロセス管理用
+        self.processes = {
+            "stream_rx": {"path": os.path.join(current_dir, "wmp_stream_rx.py"), "proc": None, "id": "hub_rx_01"},
+            "status_eng": {"path": os.path.join(current_dir, "status_engine.py"), "proc": None, "id": "hub_stat_01"}
+        }
+        
         self.running = True
 
-    def manage_stream_process(self, is_active):
-        """RXプロセスの死活監視・管理"""
-        if is_active:
-            if self.stream_process is None or self.stream_process.poll() is not None:
-                logger.info(f"🎬 Starting Stream Receiver: {self.rx_script_path}")
-                self.stream_process = subprocess.Popen(
-                    ["python3", self.rx_script_path],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.STDOUT
-                )
-        else:
-            if self.stream_process and self.stream_process.poll() is None:
-                logger.info("🛑 Stopping Stream Receiver...")
-                self.stream_process.terminate()
-                try:
-                    self.stream_process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    self.stream_process.kill()
-                self.stream_process = None
+    def _spawn_process(self, name):
+        """個別の環境変数(SYS_ID)を注入して子プロセスを起動"""
+        conf = self.processes[name]
+        script_path = conf["path"]
+        role_id = conf["id"]
+
+        if not os.path.exists(script_path):
+            logger.error(f"⚠️ Script not found: {script_path}")
+            return
+
+        # 環境変数の準備
+        env = os.environ.copy()
+        env["SYS_ID"] = role_id  # 💡 Role-Based IDを注入！
+
+        logger.info(f"🎬 Starting {name} as [{role_id}]: {script_path}")
+        return subprocess.Popen(
+            ["python3", script_path],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+            cwd=wildlink_root  # ルートを作業ディレクトリに設定
+        )
+
+    def manage_sub_processes(self, should_run):
+        """全サブプロセスの死活監視・管理"""
+        for name in self.processes:
+            proc_info = self.processes[name]
+            
+            if should_run:
+                # 起動していない、または落ちている場合に再起動
+                if proc_info["proc"] is None or proc_info["proc"].poll() is not None:
+                    proc_info["proc"] = self._spawn_process(name)
+            else:
+                # 停止処理
+                if proc_info["proc"] and proc_info["proc"].poll() is None:
+                    logger.info(f"🛑 Stopping {name}...")
+                    proc_info["proc"].terminate()
+                    try:
+                        proc_info["proc"].wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        proc_info["proc"].kill()
+                    proc_info["proc"] = None
 
     def command_dispatcher_loop(self):
         """DBから pending コマンドを拾って送信する運び屋"""
@@ -58,24 +85,22 @@ class WildLinkHubManager:
                 commands = self.db.fetch_pending_commands() 
                 for cmd in commands:
                     cmd_id = cmd['id']
-                    node_id = cmd['sys_id'] 
+                    sys_id = cmd['sys_id'] 
                     cmd_type = cmd.get('cmd_type', 'vst_control')
                     
-                    topic = f"vst/{node_id}/cmd/{cmd_type}"
+                    topic = f"vst/{sys_id}/cmd/{cmd_type}"
                     
                     try:
                         payload_dict = json.loads(cmd['cmd_json']) if cmd['cmd_json'] else {}
                     except:
                         payload_dict = {"raw": cmd['cmd_json']}
                     
+                    payload_dict['sys_id'] = sys_id
                     payload_dict['cmd_id'] = cmd_id
                     json_payload = json.dumps(payload_dict)
 
-                    # MQTTパブリッシュ
                     logger.info(f"📤 Dispatching [ID:{cmd_id}] to {topic}")
                     self.client.publish(topic, json_payload, qos=1)
-                    
-                    # 履歴を 'sent' に更新
                     self.db.update_command_status(cmd_id, "sent")
                     
             except Exception as e:
@@ -88,27 +113,18 @@ class WildLinkHubManager:
         client.subscribe("vst/+/res") 
 
     def on_message(self, client, userdata, msg):
-        """Nodeからの実行結果を受け取った時の処理"""
+        """Nodeからの実行結果(res)を受け取った時の処理"""
         try:
             payload = json.loads(msg.payload.decode())
-            logger.debug(f"📥 Received Response from Node: {payload}")
-
-            # 1. 履歴の更新
-            self.db.update_node_status(None, payload)
-            
-            # 2. 停止命令成功時の即時同期
-            if payload.get('val_status') == 'success' and 'stop' in payload.get('cmd', ''):
-                sys_id = payload.get('sys_id')
-                vst_type = payload.get('vst_type')
-                if sys_id and vst_type:
-                    self.db.update_vst_status(sys_id, vst_type, "idle")
-                    logger.info(f"✅ Immediate DB Sync: {vst_type} -> idle")
-
+            sys_id = payload.get('sys_id')
+            logger.debug(f"📥 Received Response from Node [{sys_id}]: {payload}")
+            self.db.update_node_status(sys_id, payload)
         except Exception as e:
             logger.error(f"❌ Message Handler Error: {e}")
 
     def run(self):
-        self.manage_stream_process(True)
+        # 起動時にサブプロセス群を立ち上げ
+        self.manage_sub_processes(True)
 
         broker = os.getenv("MQTT_BROKER", "localhost")
         self.client.connect(broker, 1883, 60)
@@ -120,13 +136,18 @@ class WildLinkHubManager:
         logger.info(f"📡 Hub Manager is running...")
         try:
             while self.running:
-                self.manage_stream_process(True)
+                # 5秒おきにサブプロセスが生きているかチェック
+                self.manage_sub_processes(True)
                 time.sleep(5)
         except KeyboardInterrupt:
             self.running = False
-            self.manage_stream_process(False)
+            self.manage_sub_processes(False)
             self.client.loop_stop()
 
 if __name__ == "__main__":
+    # ハブマネージャー自身の SYS_ID は環境変数から（なければ hub_mgr_01）
+    if not os.getenv("SYS_ID"):
+        os.environ["SYS_ID"] = "hub_mgr_01"
+    
     manager = WildLinkHubManager()
     manager.run()

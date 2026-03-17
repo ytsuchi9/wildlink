@@ -21,15 +21,24 @@ def on_message(client, userdata, msg):
     db = DBBridge() 
     
     try:
+        # トピック構成: vst/{sys_id}/{msg_type}
         topic_parts = msg.topic.split('/')
         if len(topic_parts) < 3:
             return
             
-        node_id = topic_parts[1]
+        # トピックから sys_id を抽出
+        topic_sys_id = topic_parts[1]
         msg_type = topic_parts[2]
-        payload = json.loads(msg.payload.decode())
         
-        sys_id = payload.get("sys_id") or node_id
+        payload = {}
+        try:
+            payload = json.loads(msg.payload.decode())
+        except json.JSONDecodeError:
+            logger.error(f"⚠️ Invalid JSON received on {msg.topic}")
+            return
+        
+        # ペイロード内に sys_id があれば優先、なければトピックから採用
+        sys_id = payload.get("sys_id") or topic_sys_id
 
         # --- A. ノードからのレスポンス (res) 処理 ---
         if msg_type == "res":
@@ -54,6 +63,7 @@ def on_message(client, userdata, msg):
 
             # 2. 実行成功時のみ、現在のステータスを同期
             if val_status == "success":
+                # コマンド内容を再確認してステータス反映
                 row = db.fetch_one("SELECT cmd_json FROM node_commands WHERE id = %s", (cmd_id,))
                 if row:
                     cmd_info = json.loads(row[0])
@@ -61,6 +71,7 @@ def on_message(client, userdata, msg):
                     action = cmd_info.get("action")
                     
                     if vst_type:
+                        # start命令なら streaming、それ以外（stop等）なら idle
                         new_status = 'streaming' if action == 'start' else 'idle'
                         db.update_vst_status(sys_id, vst_type, new_status)
                         logger.info(f"[{sys_id}] ⚡ Status synced: {vst_type} -> {new_status}")
@@ -71,7 +82,7 @@ def on_message(client, userdata, msg):
         elif msg_type == "report":
             sys_mon = payload.get("sys_monitor", {})
             
-            # system_logs への保存（直接SQLを実行）
+            # system_logs への保存
             sql_log = """
                 INSERT INTO system_logs (sys_id, log_level, sys_cpu_t, sys_board_t, net_rssi, log_msg) 
                 VALUES (%s, %s, %s, %s, %s, %s)
@@ -84,6 +95,7 @@ def on_message(client, userdata, msg):
 
             # node_data への保存（環境センサー値など）
             units_data = payload.get("units", {})
+            # env_ で始まるキーを環境データとして抽出
             env_data = {k: v for k, v in sys_mon.items() if k.startswith("env_")}
             
             sql_data = """
@@ -97,20 +109,23 @@ def on_message(client, userdata, msg):
                 json.dumps(units_data)
             ))
             
-            # 生存報告(nodesテーブル)を更新
-            db.update_node_heartbeat(sys_id, "online")
-            logger.debug(f"[{sys_id}] 📥 Metrics archived.")
+            # 生存報告(nodesテーブル)を更新（sys_idを使用）
+            db.update_node_heartbeat(sys_id, status="online")
+            logger.debug(f"[{sys_id}] 📥 Metrics and Heartbeat archived.")
 
     except Exception as e:
         logger.error(f"❌ Status Engine Error: {e}")
 
+# MQTTクライアント起動
 mqtt = MQTTClient(BROKER, "hub_status_engine")
 mqtt.client.on_message = on_message
 if mqtt.connect():
+    # ワイルドカードを使用して全ノードを監視
     mqtt.client.subscribe("vst/+/report")
     mqtt.client.subscribe("vst/+/res")
-    logger.info("🚀 WildLink 2026 Status Engine (Config-Sync Mode) started...")
+    logger.info("🚀 WildLink 2026 Status Engine (sys_id mode) started...")
     try:
-        while True: time.sleep(1)
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
         mqtt.disconnect()

@@ -30,24 +30,32 @@ class MySQLHandler(logging.Handler):
             self.handleError(record)
 
 def get_logger(module_name):
-    # .env から SYS_ID を取得
-    sys_id = os.getenv("SYS_ID", "unknown_node")
+    # --- ID特定ロジック ---
+    # 1. 環境変数を最優先 (SYS_ID または MACHINE_ID)
+    # 2. どちらもなければ "unknown_node"
+    sys_id = os.getenv("SYS_ID") or os.getenv("MACHINE_ID") or "unknown_node"
+    
     db = DBBridge()
     
-    # DBからログレベル設定を取得
-    db_level_str = db.get_log_level(sys_id).upper()
-    level = getattr(logging, db_level_str, logging.INFO)
+    # DBからログレベル設定を取得 (sys_id が unknown でもデフォルト値を返す想定)
+    try:
+        db_level_str = db.get_log_level(sys_id).upper()
+        level = getattr(logging, db_level_str, logging.INFO)
+    except:
+        level = logging.INFO
 
     logger = logging.getLogger(module_name)
     logger.setLevel(level)
 
     if not logger.handlers:
-        # コンソール
+        # コンソール出力 (識別しやすいよう ID を含める)
         stream_handler = logging.StreamHandler()
-        stream_handler.setFormatter(logging.Formatter('? [%(name)s] %(message)s'))
+        formatter = logging.Formatter(f'%(asctime)s [%(levelname)s] {sys_id}:%(name)s - %(message)s', 
+                                      datefmt='%Y-%m-%d %H:%M:%S')
+        stream_handler.setFormatter(formatter)
         logger.addHandler(stream_handler)
 
-        # DB
+        # DB保存用
         db_handler = MySQLHandler(db, sys_id, module_name)
         db_handler.setFormatter(logging.Formatter('%(message)s'))
         logger.addHandler(db_handler)
