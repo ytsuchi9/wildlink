@@ -20,10 +20,9 @@ logger = get_logger("main_manager")
 
 class MainManager:
     def __init__(self, sys_id):
-        # node_id から sys_id へ名称統一
         self.sys_id = sys_id
         self.db = DBBridge()
-        self.units = {}
+        self.units = {}         # キーを vst_role_name に変更
         self.links = []          
         self.active_timers = {}  
         self.current_config_raw = ""  
@@ -36,10 +35,9 @@ class MainManager:
 
     def setup_mqtt(self):
         host = os.getenv('MQTT_BROKER') or "192.168.1.102"
-        # 接続用クライアントIDも sys_id を使用
         self.mqtt = MQTTClient(host, self.sys_id)
         if self.mqtt.connect():
-            # 購読トピックを 2026年規格の sys_id パスへ
+            # 2026年規格: vst/{sys_id}/cmd/+
             cmd_topic = f"vst/{self.sys_id}/cmd/+" 
             self.mqtt.client.subscribe(cmd_topic)
             self.mqtt.client.on_message = self.on_mqtt_message
@@ -48,33 +46,35 @@ class MainManager:
     def on_mqtt_message(self, client, userdata, msg):
         try:
             payload = json.loads(msg.payload.decode())
-            target = payload.get("target")
+            # 2026年仕様: roleを優先、なければtargetを見る
+            target_role = payload.get("role") or payload.get("target")
             cmd_id = payload.get("cmd_id")
-            # 応答トピックも sys_id に統一
             res_topic = f"vst/{self.sys_id}/res"
 
             if cmd_id:
-                # ACK (受け取った旨) を即座に返信
+                # ACK (即座に受信報告)
                 self.mqtt.client.publish(res_topic, json.dumps({
                     "sys_id": self.sys_id,
                     "cmd_id": cmd_id, 
                     "val_status": "acked"
                 }))
 
-            if target in self.units:
+            # 役割名(target_role)でユニットを検索
+            if target_role in self.units:
                 try:
-                    self.units[target].execute_logic(payload)
+                    self.units[target_role].execute_logic(payload)
                     if cmd_id:
-                        # 成功報告
+                        # 成功報告 (role情報を添えて)
                         self.mqtt.client.publish(res_topic, json.dumps({
                             "sys_id": self.sys_id,
                             "cmd_id": cmd_id, 
+                            "role": target_role,
                             "val_status": "success", 
                             "log_code": 200,
-                            "target_status": getattr(self.units[target], 'val_status', 'unknown')
+                            "target_status": getattr(self.units[target_role], 'val_status', 'unknown')
                         }))
                 except Exception as unit_e:
-                    logger.error(f"❌ [{target}] Execution failed: {unit_e}")
+                    logger.error(f"❌ [{target_role}] Execution failed: {unit_e}")
                     if cmd_id:
                         self.mqtt.client.publish(res_topic, json.dumps({
                             "sys_id": self.sys_id,
@@ -83,7 +83,7 @@ class MainManager:
                             "log_code": 500, 
                             "log_msg": str(unit_e)
                         }))
-            elif target == "manager" and payload.get("action") == "reload":
+            elif target_role == "manager" and payload.get("action") == "reload":
                 logger.info("🔄 Reload command received via MQTT")
                 self.load_and_init_units()
 
@@ -91,8 +91,7 @@ class MainManager:
             logger.error(f"❌ [MQTT] Error: {e}")
 
     def load_and_init_units(self):
-        """DBから最新設定を読み込み、キャッシュと比較して変更があれば反映"""
-        # 引数を sys_id に修正
+        """DBから有効(is_active=1)な設定を読み込み、反映"""
         new_configs = self.db.fetch_node_config(self.sys_id)
         new_links = self.db.fetch_vst_links(self.sys_id)
         
@@ -104,7 +103,7 @@ class MainManager:
                     new_configs = cached_data.get("configs", [])
                     new_links = cached_data.get("links", [])
             else:
-                logger.error("❌ [Manager] No config available (DB fail & No cache)")
+                logger.error("❌ [Manager] No config available")
                 return
 
         current_data_set = {"configs": new_configs, "links": new_links}
@@ -113,14 +112,14 @@ class MainManager:
         if new_config_raw == self.current_config_raw:
             return
 
-        logger.info("🔄 [Manager] Config/Links change detected. Synchronizing...")
+        logger.info("🔄 [Manager] Config/Links change detected. Re-initializing units...")
         
         self.current_config_raw = new_config_raw
         self.links = new_links
         with open(self.config_cache_path, 'w') as f:
             json.dump(current_data_set, f)
         
-        # 既存ユニットとタイマーのクリーンアップ
+        # 既存リソースの解放
         for t in self.active_timers.values(): 
             t.cancel()
         self.active_timers.clear()
@@ -135,7 +134,8 @@ class MainManager:
 
         # ユニットの初期化
         for cfg in new_configs:
-            role = cfg['vst_type']
+            vst_type = cfg['vst_type']
+            role_name = cfg.get('vst_role_name') or vst_type # 役割名をキーにする
             cls_name = cfg['vst_class']
             mod_name = cfg.get('vst_module', f"vst_{cls_name.lower()}")
             params = cfg.get('val_params', {})
@@ -143,49 +143,44 @@ class MainManager:
             unit_config = {
                 "hw_driver": cfg.get("hw_driver"),
                 "hw_bus_addr": cfg.get("hw_bus_addr"),
-                "vst_role_name": cfg.get("vst_role_name")
+                "vst_role_name": role_name
             }
 
             try:
                 module = __import__(f"node.{mod_name}", fromlist=[f"VST_{cls_name}"])
                 vst_class = getattr(module, f"VST_{cls_name}")
                 
-                import inspect
-                sig = inspect.signature(vst_class.__init__)
-                # ユニット側にも sys_id を渡す（必要なら）
-                if 'config' in sig.parameters:
-                    self.units[role] = vst_class(role, params, self.mqtt, self.on_event, config=unit_config)
-                else:
-                    self.units[role] = vst_class(role, params, self.mqtt, self.on_event)
+                # 2026年仕様: vst_role_name を識別子として渡す
+                self.units[role_name] = vst_class(role_name, params, self.mqtt, self.on_event, config=unit_config)
                 
-                logger.info(f"✅ [{role}] Activated ({unit_config['hw_driver']} @ {unit_config['hw_bus_addr']})")
+                logger.info(f"✅ [{role_name}] Activated as {vst_type}")
             except Exception as e: 
-                logger.error(f"❌ [{role}] Activation failed: {e}")
+                logger.error(f"❌ [{role_name}] Activation failed: {e}")
 
     def on_event(self, source_role, event_type):
+        """連動設定(Links)の実行ロジック"""
         logger.debug(f"🔔 [Event] Source: {source_role} Type: {event_type}")
         
-        matched_links = [l for l in self.links if l['source_role'] == source_role]
+        matched_links = [l for l in self.links if l['source_role'] == source_role and l.get('event_type') == event_type]
         
-        if not matched_links:
-            return
-
         for link in matched_links:
             target_role = link['target_role']
-            duration = link['val_interval']
+            duration = link.get('val_interval', 0)
             
             if target_role in self.units:
                 target_unit = self.units[target_role]
-                is_active = getattr(target_unit, "act_run", False)
-                new_run = not is_active if duration == 0 else True
+                # act_run を制御
+                is_running = getattr(target_unit, "act_run", False)
+                new_state = not is_running if duration == 0 else True
                 
-                logger.info(f"➡️ [Route] {source_role} -> {target_role} (Action: {'TOGGLE' if duration == 0 else 'ON'})")
-                target_unit.execute_logic({"act_run": new_run})
+                logger.info(f"➡️ [Route] {source_role} -> {target_role} (State: {new_state})")
+                target_unit.execute_logic({"act_run": new_state})
                 
+                # タイマー制御
                 if target_role in self.active_timers:
                     self.active_timers[target_role].cancel()
                 
-                if new_run and duration > 0:
+                if new_state and duration > 0:
                     t = threading.Timer(duration, lambda r=target_role: self.units[r].execute_logic({"act_run": False}))
                     t.daemon = True
                     self.active_timers[target_role] = t
@@ -201,12 +196,13 @@ class MainManager:
             while True:
                 now = time.time()
                 if now - self.last_sync_time > self.sync_interval:
-                    # ハートビート更新
+                    # ハートビート更新と構成の再チェック
                     self.db.update_node_heartbeat(self.sys_id, status="online")
                     self.load_and_init_units() 
                     self.last_sync_time = now
                 
-                for unit in self.units.values():
+                # 各ユニットの定期処理（センサー読み取り等）
+                for unit in list(self.units.values()):
                     if hasattr(unit, 'poll'): 
                         unit.poll()
                 
@@ -217,7 +213,6 @@ class MainManager:
             GPIO.cleanup()
 
 if __name__ == "__main__":
-    # 環境変数から sys_id を取得。なければデフォルト node_001
     sys_id = os.getenv("SYS_ID", "node_001")
     manager = MainManager(sys_id)
     manager.run()

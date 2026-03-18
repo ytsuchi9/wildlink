@@ -2,36 +2,46 @@ class CameraUnit {
     constructor(conf, manager) {
         this.conf = conf;
         this.manager = manager;
-        this.name = conf.vst_type;
+        // 2026年仕様: vst_type ではなく vst_role_name を識別子にする
+        this.name = conf.vst_role_name || conf.vst_type; 
         
         const params = conf.val_params || {};
+        // ホスト名は基本現在のドメイン。ポートは MJPEG Bridge 標準の 8080
         this.streamHost = params.host || window.location.hostname; 
-        
-        // 💡 修正: params.port ではなく params.net_port を参照
-        // 💡 さらに MJPEG Bridge は 8080 で待ち受けているので、ここは 8080 固定が正解
         this.streamPort = "8080"; 
     }
 
-    // 初期UI構築（ボタンなど）
+    // 初期UI構築
     initUI() {
         const ctrl = document.getElementById(`controls-${this.name}`);
+        if (!ctrl) return;
+        
+        // ボタンクリック時に this.name (Role名) を渡すように固定
         ctrl.innerHTML = `
-            <button class="btn-control" onclick="CameraUnit.sendCmd('${this.name}', 'start')">STREAM START</button>
-            <button class="btn-control" onclick="CameraUnit.sendCmd('${this.name}', 'stop')">STREAM STOP</button>
+            <button class="btn-control" onclick="CameraUnit.sendCmd('${this.nodeId}', '${this.name}', 'start')">STREAM START</button>
+            <button class="btn-control" onclick="CameraUnit.sendCmd('${this.nodeId}', '${this.name}', 'stop')">STREAM STOP</button>
         `;
+        
+        // ※ HTMLのonclick引数を動的に生成するため、以下のように bind してイベント設定する方が安全です
+        const btns = ctrl.querySelectorAll('button');
+        btns[0].onclick = (e) => CameraUnit.sendCmd(this.manager.nodeId, this.name, 'start', e);
+        btns[1].onclick = (e) => CameraUnit.sendCmd(this.manager.nodeId, this.name, 'stop', e);
     }
 
-    // 状態更新
+    // 状態更新（VstManagerから呼ばれる）
     update(unitData) {
         const el = document.getElementById(`plugin-${this.name}`);
         const disp = document.getElementById(`disp-${this.name}`);
         const content = document.getElementById(`content-${this.name}`);
         
+        if (!el || !disp || !content) return;
+
+        // streaming または success の場合に映像を表示
         const isStreaming = (unitData.val_status === 'streaming' || unitData.val_status === 'success');
         disp.innerText = (unitData.val_status || "IDLE").toUpperCase();
 
         if (isStreaming) {
-            el.classList.add('u3');
+            el.classList.add('u3'); // アクティブなスタイル
             this.ensureStream(content);
         } else {
             el.classList.remove('u3');
@@ -46,14 +56,14 @@ class CameraUnit {
             img = document.createElement('img');
             img.id = `view-${this.name}`;
             img.style.width = "100%";
+            img.className = "camera-stream";
             
-            // 💡 リトライロジック + 動的URL
+            // 2026規格URL: http://[IP]:8080/stream/[role_name]
             const buildUrl = () => `http://${this.streamHost}:${this.streamPort}/stream/${this.name}?t=${Date.now()}`;
 
             img.onerror = () => {
-                console.warn(`[${this.name}] Stream load error. Retrying in 1.5s...`);
+                console.warn(`[${this.name}] Stream load error. Retrying...`);
                 setTimeout(() => {
-                    // まだ要素がDOMに存在する場合のみリロード
                     const currentImg = document.getElementById(`view-${this.name}`);
                     if (currentImg) currentImg.src = buildUrl();
                 }, 1500); 
@@ -68,18 +78,20 @@ class CameraUnit {
     removeStream(container) {
         const img = document.getElementById(`view-${this.name}`);
         if (img) {
-            // 💡 削除する前にsrcを空にするのがコツ
-            // これにより、ブラウザが「このストリーム通信はもう不要だ」と判断し、
-            // wmp_stream_rx.py 側に切断（GeneratorExit）を発生させやすくなります。
-            img.src = ""; 
+            img.src = ""; // 接続を明示的に切断
             img.remove();
-            console.log(`[${this.name}] Stream stopped and element removed.`);
         }
-        document.getElementById(`disp-${this.name}`).style.fontSize = "1.1rem";
+        const disp = document.getElementById(`disp-${this.name}`);
+        if (disp) disp.style.fontSize = "1.1rem";
     }
 
-    // static sendCmd 内の SYS_ID は camviewer.html で定義されているグローバル変数を使用
-    static async sendCmd(target, action) {
+    /**
+     * コマンド送信静的メソッド
+     * @param {string} nodeId - sys_id
+     * @param {string} role - vst_role_name
+     * @param {string} action - 'start' or 'stop'
+     */
+    static async sendCmd(nodeId, role, action, event) {
         const btn = event.target;
         const originalText = btn.innerText;
         btn.disabled = true;
@@ -87,19 +99,17 @@ class CameraUnit {
 
         try {
             const formData = new URLSearchParams();
-            
-            // 💡 修正: camviewer.html で定義した変数名 (sys_ID) を使用
-            // 💡 かつ、送信キーも sys_id に統一
-            formData.append('sys_id', sys_ID); 
+            formData.append('sys_id', nodeId); 
             formData.append('cmd_type', 'vst_control');
 
+            // 2026年仕様: payloadに role と action を含める
             const cmdData = { 
-                "target": target,
+                "role": role,
+                "action": action,
                 "act_run": (action === 'start')
             };
             formData.append('cmd_json', JSON.stringify(cmdData));
 
-            // send_cmd.php へのリクエスト
             const res = await fetch('send_cmd.php', { method: 'POST', body: formData });
             const data = await res.json();
             
@@ -107,27 +117,31 @@ class CameraUnit {
             
             const cmdId = data.command_id;
 
+            // コマンドの成否を追跡
             const track = async () => {
                 const check = await fetch(`get_command_status.php?id=${cmdId}`);
                 const status = await check.json();
                 
                 if (status.val_status === 'success') {
                     btn.innerText = "SUCCESS";
-                    btn.style.backgroundColor = "var(--success-color)";
+                    btn.style.backgroundColor = "var(--success-color, #28a745)";
+                    // マネージャーの更新を走らせてUIを即時反映
                     if (window.vstManagerInstance) window.vstManagerInstance.refresh();
                     setTimeout(() => CameraUnit.resetBtn(btn, originalText), 2000);
-                } else if (status.val_status === 'error') {
-                    btn.innerText = "ERROR";
-                    btn.style.backgroundColor = "var(--error-color)";
-                    setTimeout(() => CameraUnit.resetBtn(btn, originalText), 2000);
+                } else if (status.val_status === 'error' || status.log_code >= 400) {
+                    btn.innerText = "FAILED";
+                    btn.style.backgroundColor = "var(--error-color, #dc3545)";
+                    setTimeout(() => CameraUnit.resetBtn(btn, originalText), 3000);
                 } else {
-                    setTimeout(track, 1000);
+                    // pending/sent の場合は継続監視
+                    setTimeout(track, 800);
                 }
             };
             track();
         } catch (e) { 
             console.error(e); 
-            CameraUnit.resetBtn(btn, originalText);
+            btn.innerText = "NET ERROR";
+            setTimeout(() => CameraUnit.resetBtn(btn, originalText), 2000);
         }
     }
 

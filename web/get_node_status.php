@@ -1,13 +1,17 @@
 <?php
-// get_node_status.php
+// /var/www/html/web/get_node_status.php
 require_once 'wildlink_core.php';
 header('Content-Type: application/json');
 
-// 修正：$_GET['id'] ではなく $_GET['sys_id'] を見る
-$sys_id = $_GET['sys_id'] ?? 'node_001'; 
+$sys_id = $_GET['sys_id'] ?? null; 
+
+if (!$sys_id) {
+    echo json_encode(["error" => "No sys_id provided"]);
+    exit;
+}
 
 try {
-    // 2. nodesテーブルから基本情報を取得
+    // 1. nodesテーブルから基本情報を取得
     $stmt = $pdo->prepare("SELECT sys_id, sys_status, val_log_level, net_ip FROM nodes WHERE sys_id = ?");
     $stmt->execute([$sys_id]);
     $node = $stmt->fetch();
@@ -17,26 +21,39 @@ try {
         exit;
     }
 
-    // 3. ユニットごとの動作状態を取得
-    $stmtStatus = $pdo->prepare("SELECT vst_type, val_status FROM node_status_current WHERE sys_id = ?");
+    // 2. 2026年仕様：役割(Role)ごとの最新状態を取得
+    // node_configsをベースに、現在のステータスをJOINする
+    $sqlStatus = "
+        SELECT 
+            c.vst_role_name, 
+            c.vst_type, 
+            COALESCE(s.val_status, 'offline') as val_status,
+            s.updated_at
+        FROM node_configs c
+        LEFT JOIN node_status_current s 
+            ON c.sys_id = s.sys_id AND c.vst_role_name = s.vst_role_name
+        WHERE c.sys_id = ? AND c.is_active = 1
+    ";
+    $stmtStatus = $pdo->prepare($sqlStatus);
     $stmtStatus->execute([$sys_id]);
-    $unitStatuses = $stmtStatus->fetchAll(PDO::FETCH_KEY_PAIR);
+    $roles = $stmtStatus->fetchAll();
 
-    // 4. 最新バイタルを取得
+    // 3. 最新バイタルを取得 (wildlink_coreの拡張版を使用)
     $vital = WildLink::getLatestVital($sys_id);
 
-    // 5. レスポンスの構築
+    // 4. レスポンスの構築
     $response = [
-        "sys_id"        => $node['sys_id'],
-        "sys_status"    => $node['sys_status'],
-        "unit_statuses" => $unitStatuses, 
-        "vitals"        => [
-            "sys_cpu_t"   => $vital['sys_cpu_t'] ?? '--',
-            "net_rssi"    => $vital['net_rssi'] ?? '--',
-            "sys_up"      => $vital['sys_up'] ?? '--',
-            "last_seen"   => $vital['created_at'] ?? '--'
+        "sys_id"     => $node['sys_id'],
+        "sys_status" => $node['sys_status'],
+        "net_ip"     => $node['net_ip'],
+        "roles"      => $roles, // 役割ごとの配列
+        "vitals"     => [
+            "sys_cpu_t" => $vital['cpu_t'] ?? '--', // ext_infoから自動マージされた値
+            "net_rssi"  => $vital['rssi'] ?? '--',
+            "board_t"   => $vital['board_t'] ?? '--',
+            "last_seen" => $vital['created_at'] ?? '--'
         ],
-        "server_time"   => date('H:i:s')
+        "server_time" => date('H:i:s')
     ];
 
     echo json_encode($response);

@@ -26,7 +26,7 @@ def on_message(client, userdata, msg):
         if len(topic_parts) < 3:
             return
             
-        # トピックから sys_id を抽出
+        # トピックから情報を抽出
         topic_sys_id = topic_parts[1]
         msg_type = topic_parts[2]
         
@@ -48,9 +48,10 @@ def on_message(client, userdata, msg):
                 return
             
             # 1. コマンド履歴(node_commands)を更新
+            # ※ node_commands は履歴なので直接UPDATEでOK（設計維持）
             sql_cmd = """
                 UPDATE node_commands 
-                SET val_status = %s, log_code = %s, log_msg = %s, res_payload = %s, completed_at = NOW(3) 
+                SET val_status = %s, log_code = %s, log_msg = %s, val_res_payload = %s, completed_at = NOW(3) 
                 WHERE id = %s
             """
             db._execute(sql_cmd, (
@@ -67,49 +68,46 @@ def on_message(client, userdata, msg):
                 row = db.fetch_one("SELECT cmd_json FROM node_commands WHERE id = %s", (cmd_id,))
                 if row:
                     cmd_info = json.loads(row[0])
-                    vst_type = cmd_info.get("target") or cmd_info.get("vst_type")
+                    # 2026年版：vst_type ではなく role (役割名) を優先的に探す
+                    role_name = cmd_info.get("role") or cmd_info.get("target") or cmd_info.get("vst_type")
                     action = cmd_info.get("action")
                     
-                    if vst_type:
+                    if role_name:
                         # start命令なら streaming、それ以外（stop等）なら idle
                         new_status = 'streaming' if action == 'start' else 'idle'
-                        db.update_vst_status(sys_id, vst_type, new_status)
-                        logger.info(f"[{sys_id}] ⚡ Status synced: {vst_type} -> {new_status}")
+                        # DBBridgeの新しい role 対応メソッドを使用
+                        db.update_vst_status(sys_id, role_name, new_status)
+                        logger.info(f"[{sys_id}] ⚡ Status synced: {role_name} -> {new_status}")
 
             logger.debug(f"[{sys_id}] ✅ Command {cmd_id} updated to {val_status}")
 
         # --- B. ノードからのレポート (report) 処理 ---
         elif msg_type == "report":
             sys_mon = payload.get("sys_monitor", {})
-            
-            # system_logs への保存
-            sql_log = """
-                INSERT INTO system_logs (sys_id, log_level, sys_cpu_t, sys_board_t, net_rssi, log_msg) 
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """
-            db._execute(sql_log, (
-                sys_id, "info", 
-                sys_mon.get("sys_cpu_t"), sys_mon.get("sys_board_t"), 
-                sys_mon.get("net_rssi"), sys_mon.get("log_msg")
-            ))
-
-            # node_data への保存（環境センサー値など）
             units_data = payload.get("units", {})
+            
+            # 1. system_logs への保存 (DBBridge経由に統合)
+            log_msg = sys_mon.get("log_msg", "System Report")
+            ext_info = json.dumps({
+                "cpu_t": sys_mon.get("sys_cpu_t"),
+                "board_t": sys_mon.get("sys_board_t"),
+                "rssi": sys_mon.get("net_rssi")
+            })
+            db.insert_system_log(sys_id, "report", "info", log_msg, code=200, ext=ext_info)
+
+            # 2. node_data への保存（環境センサー値など：ハイブリッド型）
             # env_ で始まるキーを環境データとして抽出
-            env_data = {k: v for k, v in sys_mon.items() if k.startswith("env_")}
+            env_data = {
+                'temp': sys_mon.get("env_temp"),
+                'hum':  sys_mon.get("env_hum"),
+                'pres': sys_mon.get("env_pres"),
+                'lux':  sys_mon.get("env_lux")
+            }
             
-            sql_data = """
-                INSERT INTO node_data (sys_id, env_temp, env_hum, env_pres, env_lux, raw_data) 
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """
-            db._execute(sql_data, (
-                sys_id, 
-                env_data.get("env_temp"), env_data.get("env_hum"), 
-                env_data.get("env_pres"), env_data.get("env_lux"), 
-                json.dumps(units_data)
-            ))
+            # role_name は、一括レポートの場合は "node_system" などで固定
+            db.insert_node_data(sys_id, "node_system", env_data, raw_json=json.dumps(units_data))
             
-            # 生存報告(nodesテーブル)を更新（sys_idを使用）
+            # 3. 生存報告(nodesテーブル)を更新
             db.update_node_heartbeat(sys_id, status="online")
             logger.debug(f"[{sys_id}] 📥 Metrics and Heartbeat archived.")
 
@@ -123,7 +121,7 @@ if mqtt.connect():
     # ワイルドカードを使用して全ノードを監視
     mqtt.client.subscribe("vst/+/report")
     mqtt.client.subscribe("vst/+/res")
-    logger.info("🚀 WildLink 2026 Status Engine (sys_id mode) started...")
+    logger.info("🚀 WildLink 2026 Status Engine (Role-aware) started...")
     try:
         while True:
             time.sleep(1)

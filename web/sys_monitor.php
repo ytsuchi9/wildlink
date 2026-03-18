@@ -114,62 +114,70 @@
     }
 
     // --- 2. ステータスカードの取得と反映 ---
-        async function fetchStatusCards() {
-            try {
-                const response = await fetch('api_status_cards.php');
-                const nodes = await response.json();
-                const container = document.getElementById('node-cards');
+    async function fetchStatusCards() {
+        try {
+            const response = await fetch('api_status_cards.php');
+            const nodes = await response.json();
+            const container = document.getElementById('node-cards');
+            
+            container.innerHTML = '';
+            nodes.forEach(node => {
+                // 2026年版 API が返す is_online フラグを優先的に使用
+                const isOnline = node.is_online; 
+                const statusClass = isOnline ? 'online' : 'offline';
+                // 表示テキスト（active などの内部状態を表示）
+                const statusText = node.sys_status.toUpperCase();
                 
-                container.innerHTML = '';
-                nodes.forEach(node => {
-                    // 不整合修正: api_status_cards.php が返す最新のキー名に合わせる
-                    const isOnline = node.sys_status === 'online'; 
-                    const statusClass = isOnline ? 'online' : 'offline';
-                    
-                    // カード全体をリンク化するためのURL
-                    const consoleUrl = `camviewer.html?sys_id=${node.sys_id}`;
+                // カード全体をリンク化（sys_idを渡す）
+                const consoleUrl = `camviewer.html?sys_id=${node.sys_id}`;
 
-                    const cardHtml = `
-                        <div class="col-md-3 col-sm-6 mb-3">
-                            <a href="${consoleUrl}" class="text-decoration-none text-dark">
-                                <div class="card card-node p-3 h-100 shadow-sm" style="cursor: pointer; transition: transform 0.2s;">
-                                    <div class="d-flex justify-content-between align-items-start mb-3">
-                                        <div>
-                                            <div class="vital-label">Node ID</div>
-                                            <div class="fw-bold fs-5 text-primary">${node.sys_id}</div>
-                                        </div>
-                                        <span class="badge bg-light text-dark border">${node.val_log_level}</span>
+                const cardHtml = `
+                    <div class="col-md-3 col-sm-6 mb-3">
+                        <a href="${consoleUrl}" class="text-decoration-none text-dark">
+                            <div class="card card-node p-3 h-100 shadow-sm" style="cursor: pointer;">
+                                <div class="d-flex justify-content-between align-items-start mb-2">
+                                    <div>
+                                        <div class="vital-label">Node ID</div>
+                                        <div class="fw-bold fs-5 text-primary">${node.sys_id}</div>
                                     </div>
-                                    <div class="mb-3">
-                                        <span class="status-dot ${statusClass}"></span>
-                                        <span class="fw-bold text-uppercase">${node.sys_status}</span>
+                                    <span class="badge bg-light text-dark border">${node.val_log_level}</span>
+                                </div>
+                                <div class="mb-3">
+                                    <span class="status-dot ${statusClass}"></span>
+                                    <span class="fw-bold text-uppercase ${isOnline ? 'text-success' : 'text-danger'}" style="font-size: 0.85rem;">
+                                        ${isOnline ? 'ONLINE' : 'OFFLINE'} (${statusText})
+                                    </span>
+                                </div>
+                                <div class="row g-0 border-top pt-2">
+                                    <div class="col-6 border-end text-center">
+                                        <div class="vital-label">CPU Temp</div>
+                                        <div class="vital-value">${node.sys_cpu_t !== '--' ? parseFloat(node.sys_cpu_t).toFixed(1) + '°C' : '--'}</div>
                                     </div>
-                                    <div class="row g-0 border-top pt-2">
-                                        <div class="col-6 border-end text-center">
-                                            <div class="vital-label">CPU Temp</div>
-                                            <div class="vital-value">${node.sys_cpu_t ? parseFloat(node.sys_cpu_t).toFixed(1) + '°C' : '--'}</div>
-                                        </div>
-                                        <div class="col-6 text-center">
-                                            <div class="vital-label">RSSI</div>
-                                            <div class="vital-value">${node.net_rssi || '--'}<small class="fs-6 ps-1">dBm</small></div>
-                                        </div>
-                                    </div>
-                                    <div class="mt-2 text-center border-top pt-1">
-                                        <small class="text-muted" style="font-size: 0.7rem;">Last Seen: ${node.last_seen || 'Never'}</small>
-                                    </div>
-                                    <div class="mt-1 text-center">
-                                        <span class="badge bg-info text-white" style="font-size: 0.6rem;">OPEN CONSOLE</span>
+                                    <div class="col-6 text-center">
+                                        <div class="vital-label">RSSI</div>
+                                        <div class="vital-value">${node.net_rssi || '--'}<small class="fs-6 ps-1">dBm</small></div>
                                     </div>
                                 </div>
-                            </a>
-                        </div>
-                    `;
-                    container.innerHTML += cardHtml;
-                });
-            } catch (error) {
-                console.error('Status Card Error:', error);
-            }
+                                <div class="mt-2 text-center border-top pt-1">
+                                    <small class="text-muted" style="font-size: 0.7rem;">Last Seen: ${node.last_seen || 'Never'}</small>
+                                </div>
+                                <div class="mt-2 text-center">
+                                    <span class="btn btn-xs btn-outline-primary py-0" style="font-size: 0.65rem;">OPEN CONSOLE</span>
+                                </div>
+                            </div>
+                        </a>
+                    </div>
+                `;
+                container.innerHTML += cardHtml;
+            });
+            
+            // 更新時刻を表示
+            document.getElementById('last-update').innerText = `Last Update: ${new Date().toLocaleTimeString()}`;
+            
+        } catch (error) {
+            console.error('Status Card Error:', error);
         }
+    }
 
     // --- 共通ツール ---
     function escapeHtml(str) {

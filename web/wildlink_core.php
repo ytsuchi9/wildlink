@@ -4,6 +4,7 @@
 /**
  * WildLink 2026 Core Engine
  * 役割: 環境変数読み込み、DB接続の集約、共通ユーティリティ
+ * 2026 Update: Role-aware data fetching & Unified Logging
  */
 
 class WildLink {
@@ -32,7 +33,7 @@ class WildLink {
         self::connectDB();
     }
 
-    // 2. DB接続 (PDO & MySQLi 両対応)
+    // 2. DB接続
     private static function connectDB() {
         $host = self::$env['DB_HOST_LOCAL'] ?? (self::$env['DB_HOST'] ?? '127.0.0.1');
         $db   = self::$env['DB_NAME'] ?? 'wildlink_db';
@@ -40,12 +41,10 @@ class WildLink {
         $pass = self::$env['DB_PASS'] ?? '';
 
         try {
-            // 新世代用 PDO
             self::$pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass, [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
             ]);
-            // 既存コード用 MySQLi
             self::$mysqli = new mysqli($host, $user, $pass, $db);
             self::$mysqli->set_charset("utf8mb4");
         } catch (Exception $e) {
@@ -54,16 +53,62 @@ class WildLink {
         }
     }
 
-    // 3. ヘルパー：最新バイタル取得
+    /**
+     * ヘルパー：ノードの最新システムログ（Vital）取得
+     * ※CPU温度やRSSIなど、システム全般の状態
+     */
     public static function getLatestVital($sys_id) {
-        $stmt = self::$pdo->prepare("SELECT * FROM system_logs WHERE sys_id = ? ORDER BY id DESC LIMIT 1");
+        $stmt = self::$pdo->prepare("
+            SELECT * FROM system_logs 
+            WHERE sys_id = ? AND log_type = 'report'
+            ORDER BY created_at DESC LIMIT 1
+        ");
         $stmt->execute([$sys_id]);
-        return $stmt->fetch();
+        $res = $stmt->fetch();
+        
+        // ext_info (JSON) がある場合はデコードしてマージ
+        if ($res && !empty($res['ext_info'])) {
+            $ext = json_decode($res['ext_info'], true);
+            if (is_array($ext)) $res = array_merge($res, $ext);
+        }
+        return $res;
+    }
+
+    /**
+     * ヘルパー：特定の役割（Role）の最新データを取得
+     * 例：BME280センサーの最新の温度・湿度など
+     */
+    public static function getLatestRoleData($sys_id, $role_name = 'node_system') {
+        $stmt = self::$pdo->prepare("
+            SELECT * FROM node_data 
+            WHERE sys_id = ? AND vst_role_name = ? 
+            ORDER BY created_at DESC LIMIT 1
+        ");
+        $stmt->execute([$sys_id, $role_name]);
+        $res = $stmt->fetch();
+
+        if ($res && !empty($res['raw_data'])) {
+            $raw = json_decode($res['raw_data'], true);
+            if (is_array($raw)) $res['val_data'] = $raw;
+        }
+        return $res;
+    }
+
+    /**
+     * ヘルパー：ノードに紐づくアクティブなVST（役割）一覧を取得
+     */
+    public static function getNodeActiveRoles($sys_id) {
+        $stmt = self::$pdo->prepare("
+            SELECT vst_role_name, vst_type, val_status 
+            FROM node_configs 
+            WHERE sys_id = ? AND is_active = 1
+        ");
+        $stmt->execute([$sys_id]);
+        return $stmt->fetchAll();
     }
 }
 
 // 自動初期化
 WildLink::init();
-// 短縮変数（既存コード書き換え用）
 $pdo = WildLink::$pdo;
 $mysqli = WildLink::$mysqli;

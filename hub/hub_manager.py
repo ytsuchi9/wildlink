@@ -22,6 +22,7 @@ logger = get_logger("hub_manager")
 class WildLinkHubManager:
     def __init__(self):
         self.db = DBBridge()
+        # 2026年仕様: 最新のCallback APIを使用
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id="wildlink_hub")
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
@@ -46,7 +47,7 @@ class WildLinkHubManager:
 
         # 環境変数の準備
         env = os.environ.copy()
-        env["SYS_ID"] = role_id  # 💡 Role-Based IDを注入！
+        env["SYS_ID"] = role_id  # Role-Based IDを注入
 
         logger.info(f"🎬 Starting {name} as [{role_id}]: {script_path}")
         return subprocess.Popen(
@@ -54,7 +55,7 @@ class WildLinkHubManager:
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
-            cwd=wildlink_root  # ルートを作業ディレクトリに設定
+            cwd=wildlink_root 
         )
 
     def manage_sub_processes(self, should_run):
@@ -82,12 +83,14 @@ class WildLinkHubManager:
         logger.info("📨 Command Dispatcher Loop is active.")
         while self.running:
             try:
+                # 2026年版: is_active=1 は DBBridge 側で担保される
                 commands = self.db.fetch_pending_commands() 
                 for cmd in commands:
                     cmd_id = cmd['id']
                     sys_id = cmd['sys_id'] 
                     cmd_type = cmd.get('cmd_type', 'vst_control')
                     
+                    # 送信先トピック: vst/{sys_id}/cmd/{cmd_type}
                     topic = f"vst/{sys_id}/cmd/{cmd_type}"
                     
                     try:
@@ -95,12 +98,20 @@ class WildLinkHubManager:
                     except:
                         payload_dict = {"raw": cmd['cmd_json']}
                     
+                    # 2026年仕様: ペイロードに ID と Role 情報を付加
                     payload_dict['sys_id'] = sys_id
                     payload_dict['cmd_id'] = cmd_id
+                    
+                    # DBのカラムにある vst_role_name があればそれを優先して target に指定
+                    if 'vst_role_name' in cmd and cmd['vst_role_name']:
+                        payload_dict['role'] = cmd['vst_role_name']
+
                     json_payload = json.dumps(payload_dict)
 
                     logger.info(f"📤 Dispatching [ID:{cmd_id}] to {topic}")
                     self.client.publish(topic, json_payload, qos=1)
+                    
+                    # DB側のステータスを "sent" に更新
                     self.db.update_command_status(cmd_id, "sent")
                     
             except Exception as e:
@@ -110,26 +121,30 @@ class WildLinkHubManager:
 
     def on_connect(self, client, userdata, flags, rc):
         logger.info(f"🌐 Hub Manager Connected (rc:{rc})")
+        # 全ノードからのレスポンスをサブスクライブ
         client.subscribe("vst/+/res") 
 
     def on_message(self, client, userdata, msg):
-        """Nodeからの実行結果(res)を受け取った時の処理"""
+        """Nodeからの実行結果(res)を受け取りDBを更新"""
         try:
             payload = json.loads(msg.payload.decode())
             sys_id = payload.get('sys_id')
             logger.debug(f"📥 Received Response from Node [{sys_id}]: {payload}")
+            
+            # DBBridge の統合更新メソッドを使用
             self.db.update_node_status(sys_id, payload)
         except Exception as e:
             logger.error(f"❌ Message Handler Error: {e}")
 
     def run(self):
-        # 起動時にサブプロセス群を立ち上げ
+        # 起動時にサブプロセス群（StatusEngine等）を立ち上げ
         self.manage_sub_processes(True)
 
         broker = os.getenv("MQTT_BROKER", "localhost")
         self.client.connect(broker, 1883, 60)
         self.client.loop_start()
         
+        # コマンド巡回スレッド開始
         dispatch_thread = threading.Thread(target=self.command_dispatcher_loop, daemon=True)
         dispatch_thread.start()
 
@@ -145,7 +160,7 @@ class WildLinkHubManager:
             self.client.loop_stop()
 
 if __name__ == "__main__":
-    # ハブマネージャー自身の SYS_ID は環境変数から（なければ hub_mgr_01）
+    # ハブマネージャー自身の ID 設定
     if not os.getenv("SYS_ID"):
         os.environ["SYS_ID"] = "hub_mgr_01"
     
