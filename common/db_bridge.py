@@ -142,6 +142,7 @@ class DBBridge:
             print(f"[DBBridge] fetch_node_config Error: {e}")
             return None
 
+    # --- 設定保存 (トランザクション意識) ---
     def save_node_config(self, sys_id, vst_role_name, vst_type, val_params):
         """
         重要：設定を履歴保持型で保存する。
@@ -150,17 +151,18 @@ class DBBridge:
         """
         try:
             conn = self._get_connection()
+            # autocommit=Trueだが、一連の処理として確実に実行
             cursor = conn.cursor()
             
-            # 1. 旧設定を無効化
+            # 1. 旧設定を無効化 (同一Roleのみ)
             deactivate_sql = "UPDATE node_configs SET is_active = 0 WHERE sys_id = %s AND vst_role_name = %s"
             cursor.execute(deactivate_sql, (sys_id, vst_role_name))
             
             # 2. 新設定を挿入
-            params_json = json.dumps(val_params) if isinstance(val_params, dict) else val_params
+            params_json = json.dumps(val_params) if isinstance(val_params, (dict, list)) else val_params
             insert_sql = """
                 INSERT INTO node_configs (sys_id, vst_role_name, vst_type, val_params, is_active, created_at)
-                VALUES (%s, %s, %s, %s, 1, NOW())
+                VALUES (%s, %s, %s, %s, 1, NOW(3))
             """
             cursor.execute(insert_sql, (sys_id, vst_role_name, vst_type, params_json))
             
@@ -238,16 +240,20 @@ class DBBridge:
             print(f"[DBBridge] update_node_status Error: {e}")
             return False
 
+    # --- コマンド取得 (順序保証) ---
     def fetch_pending_commands(self, sys_id=None):
-        """実行待ちコマンドを取得"""
+        """実行待ちコマンドを古い順(作成順)に取得"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True)
+            # created_at の昇順(ASC)で取得し、コマンドの追い越しを防止
             query = "SELECT * FROM node_commands WHERE val_status = 'pending'"
             params = []
             if sys_id:
                 query += " AND sys_id = %s"
                 params.append(sys_id)
+            query += " ORDER BY created_at ASC" 
+            
             cursor.execute(query, params)
             result = cursor.fetchall()
             cursor.close()

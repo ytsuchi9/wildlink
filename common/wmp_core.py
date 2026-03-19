@@ -6,12 +6,14 @@ class WMPHeader:
     FORMAT_STRICT = "!4s12sIIIHH" # 合計 32 bytes
     MTU_LIMIT = 1400
 
-    def __init__(self, node_id, media_type=1, bus_type=1):
+    def __init__(self, node_id, role="unknown", media_type=1, bus_type=1): # roleを追加
         """
         node_id: これが sys_id (例: "node_001") に相当する
         """
         # 💡 変数名は node_id_bin のままでも良いですが、意味は sys_id です
         self.node_id_bin = node_id.encode().ljust(12, b'\0')
+        # もしヘッダー構造を変えたくない場合は、roleは一旦保持するだけでOK
+        self.role_name = role
         self.media_type = media_type
         self.bus_type = bus_type
         self.seq_num = 0

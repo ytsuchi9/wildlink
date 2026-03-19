@@ -1,7 +1,8 @@
 🛠️ WildLink 2026 Role-Based 仕様定義 (Draft)
 
 1. 設計コンセプト従来の「デバイス種別（vst_type）」による一律管理から、「役割（vst_role_name）」を主軸とした柔軟な制御へ移行する。
-vst_type: デバイスの物理的・機能的な分類（camera, sensor, switch）。JOINやUIコンポーネントの決定に使用。vst_role_name: システム内での固有の役割名（cam_main, cam_sub, sns_move）。コマンドの宛先、MQTTトピック、HTMLのIDに使用。
+vst_type: デバイスの物理的・機能的な分類（camera, sensor, switch）。JOINやUIコンポーネントの決定に使用。
+vst_role_name: システム内での固有の役割名（cam_main, cam_sub, sns_move）。コマンドの宛先、MQTTトピック、HTMLのIDに使用。
 
 2. データベース構造（整合性確定版）
 ① node_configs (構成情報)カラム名型説明vst_typeVARCHARcamera, sensor 等の種別（device_catalogと結合）vst_role_nameVARCHARcam_main, cam_sub 等の固有IDis_activeTINYINT有効フラグ（履歴保持のため 1 のものを使用）
@@ -50,22 +51,24 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM device_catalog;
 9 rows in set (0.006 sec)
 
 MariaDB [wildlink_db]> SHOW COLUMNS FROM node_configs;
-+-----------------+--------------+------+-----+---------+----------------+
-| Field           | Type         | Null | Key | Default | Extra          |
-+-----------------+--------------+------+-----+---------+----------------+
-| config_id       | int(11)      | NO   | PRI | NULL    | auto_increment |
-| sys_id          | varchar(50)  | YES  | MUL | NULL    |                |
-| vst_type        | varchar(50)  | YES  | MUL | NULL    |                |
-| vst_role_name   | varchar(100) | YES  |     | NULL    |                |
-| is_active       | tinyint(1)   | YES  |     | 1       |                |
-| vst_description | text         | YES  |     | NULL    |                |
-| val_unit_map    | longtext     | YES  |     | NULL    |                |
-| hw_driver       | varchar(50)  | YES  |     | NULL    |                |
-| hw_bus_addr     | varchar(20)  | YES  |     | NULL    |                |
-| val_params      | longtext     | YES  |     | NULL    |                |
-| val_enabled     | tinyint(1)   | YES  |     | 1       |                |
-+-----------------+--------------+------+-----+---------+----------------+
-11 rows in set (0.005 sec)
++-----------------+--------------+------+-----+---------------------+-------------------------------+
+| Field           | Type         | Null | Key | Default             | Extra                         |
++-----------------+--------------+------+-----+---------------------+-------------------------------+
+| config_id       | int(11)      | NO   | PRI | NULL                | auto_increment                |
+| sys_id          | varchar(50)  | YES  | MUL | NULL                |                               |
+| vst_type        | varchar(50)  | YES  | MUL | NULL                |                               |
+| vst_role_name   | varchar(100) | YES  |     | NULL                |                               |
+| val_enabled     | tinyint(1)   | YES  |     | 1                   |                               |
+| vst_description | text         | YES  |     | NULL                |                               |
+| val_unit_map    | longtext     | YES  |     | NULL                |                               |
+| hw_driver       | varchar(50)  | YES  |     | NULL                |                               |
+| hw_bus_addr     | varchar(20)  | YES  |     | NULL                |                               |
+| val_params      | longtext     | YES  |     | NULL                |                               |
+| is_active       | tinyint(1)   | YES  |     | 1                   |                               |
+| created_at      | timestamp    | YES  |     | current_timestamp() |                               |
+| updated_at      | timestamp    | YES  |     | current_timestamp() | on update current_timestamp() |
++-----------------+--------------+------+-----+---------------------+-------------------------------+
+13 rows in set (0.006 sec)
 
 MariaDB [wildlink_db]> SHOW COLUMNS FROM node_commands;
 +-----------------+--------------+------+-----+----------------------+----------------+
@@ -77,6 +80,7 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM node_commands;
 | cmd_type        | varchar(50)  | YES  |     | NULL                 |                |
 | cmd_json        | longtext     | YES  |     | NULL                 |                |
 | val_status      | varchar(20)  | YES  | MUL | pending              |                |
+| log_note        | text         | YES  |     | NULL                 |                |
 | log_code        | varchar(30)  | YES  | MUL | NULL                 |                |
 | log_msg         | text         | YES  |     | NULL                 |                |
 | val_res_payload | longtext     | YES  |     | NULL                 |                |
@@ -85,7 +89,7 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM node_commands;
 | acked_at        | timestamp(3) | YES  |     | NULL                 |                |
 | completed_at    | timestamp(3) | YES  |     | NULL                 |                |
 +-----------------+--------------+------+-----+----------------------+----------------+
-13 rows in set (0.006 sec)
+14 rows in set (0.006 sec)
 
 MariaDB [wildlink_db]> SHOW COLUMNS FROM node_status_current;
 +---------------+-------------+------+-----+---------------------+-------------------------------+
@@ -97,7 +101,7 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM node_status_current;
 | val_params    | longtext    | YES  |     | NULL                |                               |
 | updated_at    | datetime    | YES  |     | current_timestamp() | on update current_timestamp() |
 +---------------+-------------+------+-----+---------------------+-------------------------------+
-5 rows in set (0.006 sec)
+5 rows in set (0.005 sec)
 
 MariaDB [wildlink_db]> SHOW COLUMNS FROM vst_links;
 +---------------+-------------+------+-----+---------------------+-------------------------------+
@@ -115,7 +119,7 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM vst_links;
 | created_at    | timestamp   | YES  |     | current_timestamp() |                               |
 | updated_at    | timestamp   | YES  |     | current_timestamp() | on update current_timestamp() |
 +---------------+-------------+------+-----+---------------------+-------------------------------+
-11 rows in set (0.005 sec)
+11 rows in set (0.006 sec)
 
 MariaDB [wildlink_db]> SHOW COLUMNS FROM node_data;
 +---------------+-------------+------+-----+---------------------+----------------+
@@ -132,7 +136,7 @@ MariaDB [wildlink_db]> SHOW COLUMNS FROM node_data;
 | raw_data      | longtext    | YES  |     | NULL                |                |
 | created_at    | timestamp   | YES  |     | current_timestamp() |                |
 +---------------+-------------+------+-----+---------------------+----------------+
-10 rows in set (0.005 sec)
+10 rows in set (0.006 sec)
 
 MariaDB [wildlink_db]> SHOW COLUMNS FROM system_logs;
 +-------------+-------------+------+-----+---------------------+----------------+

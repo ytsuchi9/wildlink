@@ -2,8 +2,8 @@ class CameraUnit {
     constructor(conf, manager) {
         this.conf = conf;
         this.manager = manager;
-        // 2026年仕様: vst_type ではなく vst_role_name を識別子にする
-        this.name = conf.vst_role_name || conf.vst_type; 
+        // 2026年仕様: vst_role_name を唯一の識別子にする（cam_main, cam_sub等）
+        this.name = conf.vst_role_name; 
         
         const params = conf.val_params || {};
         // ホスト名は基本現在のドメイン。ポートは MJPEG Bridge 標準の 8080
@@ -16,19 +16,21 @@ class CameraUnit {
         const ctrl = document.getElementById(`controls-${this.name}`);
         if (!ctrl) return;
         
-        // ボタンクリック時に this.name (Role名) を渡すように固定
+        // 2026年仕様: ボタン生成とイベントバインド
         ctrl.innerHTML = `
-            <button class="btn-control" onclick="CameraUnit.sendCmd('${this.nodeId}', '${this.name}', 'start')">STREAM START</button>
-            <button class="btn-control" onclick="CameraUnit.sendCmd('${this.nodeId}', '${this.name}', 'stop')">STREAM STOP</button>
+            <button class="btn-control btn-start">STREAM START</button>
+            <button class="btn-control btn-stop">STREAM STOP</button>
         `;
         
-        // ※ HTMLのonclick引数を動的に生成するため、以下のように bind してイベント設定する方が安全です
-        const btns = ctrl.querySelectorAll('button');
-        btns[0].onclick = (e) => CameraUnit.sendCmd(this.manager.nodeId, this.name, 'start', e);
-        btns[1].onclick = (e) => CameraUnit.sendCmd(this.manager.nodeId, this.name, 'stop', e);
+        const btnStart = ctrl.querySelector('.btn-start');
+        const btnStop = ctrl.querySelector('.btn-stop');
+
+        // manager.nodeId を使用してコマンド送信
+        btnStart.onclick = (e) => CameraUnit.sendCmd(this.manager.nodeId, this.name, 'start', e);
+        btnStop.onclick = (e) => CameraUnit.sendCmd(this.manager.nodeId, this.name, 'stop', e);
     }
 
-    // 状態更新（VstManagerから呼ばれる）
+    // 状態更新（VstManagerから3秒おきに呼ばれる）
     update(unitData) {
         const el = document.getElementById(`plugin-${this.name}`);
         const disp = document.getElementById(`disp-${this.name}`);
@@ -41,7 +43,7 @@ class CameraUnit {
         disp.innerText = (unitData.val_status || "IDLE").toUpperCase();
 
         if (isStreaming) {
-            el.classList.add('u3'); // アクティブなスタイル
+            el.classList.add('u3'); // アクティブスタイル（CSS側で定義）
             this.ensureStream(content);
         } else {
             el.classList.remove('u3');
@@ -87,13 +89,12 @@ class CameraUnit {
 
     /**
      * コマンド送信静的メソッド
-     * @param {string} nodeId - sys_id
-     * @param {string} role - vst_role_name
-     * @param {string} action - 'start' or 'stop'
      */
     static async sendCmd(nodeId, role, action, event) {
         const btn = event.target;
         const originalText = btn.innerText;
+        const originalBg = btn.style.backgroundColor;
+
         btn.disabled = true;
         btn.innerText = "SENDING...";
 
@@ -124,30 +125,30 @@ class CameraUnit {
                 
                 if (status.val_status === 'success') {
                     btn.innerText = "SUCCESS";
-                    btn.style.backgroundColor = "var(--success-color, #28a745)";
-                    // マネージャーの更新を走らせてUIを即時反映
-                    if (window.vstManagerInstance) window.vstManagerInstance.refresh();
-                    setTimeout(() => CameraUnit.resetBtn(btn, originalText), 2000);
-                } else if (status.val_status === 'error' || status.log_code >= 400) {
+                    btn.style.backgroundColor = "#28a745";
+                    setTimeout(() => CameraUnit.resetBtn(btn, originalText, originalBg), 2000);
+                } else if (status.val_status === 'error' || (status.log_code && status.log_code >= 400)) {
                     btn.innerText = "FAILED";
-                    btn.style.backgroundColor = "var(--error-color, #dc3545)";
-                    setTimeout(() => CameraUnit.resetBtn(btn, originalText), 3000);
+                    btn.style.backgroundColor = "#dc3545";
+                    setTimeout(() => CameraUnit.resetBtn(btn, originalText, originalBg), 3000);
                 } else {
-                    // pending/sent の場合は継続監視
-                    setTimeout(track, 800);
+                    setTimeout(track, 800); // 継続監視
                 }
             };
             track();
+
         } catch (e) { 
-            console.error(e); 
-            btn.innerText = "NET ERROR";
-            setTimeout(() => CameraUnit.resetBtn(btn, originalText), 2000);
+            console.error("Command Error:", e);
+            btn.innerText = "ERROR";
+            setTimeout(() => CameraUnit.resetBtn(btn, originalText, originalBg), 3000);
         }
     }
 
-    static resetBtn(btn, text) {
-        btn.innerText = text;
+    static resetBtn(btn, text, bg) {
         btn.disabled = false;
-        btn.style.backgroundColor = "";
+        btn.innerText = text;
+        btn.style.backgroundColor = bg;
     }
 }
+// js/plugins/camera-unit.js の最後に追加
+window.CameraUnit = CameraUnit;

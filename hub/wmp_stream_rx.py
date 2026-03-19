@@ -93,26 +93,28 @@ class StreamStore:
 
 store = StreamStore()
 
-# --- 3. マッピング取得 ---
+# --- 3. マッピング取得 (Role-Based版) ---
 def get_vst_mapping():
-    """node_configsテーブルから受信ポート一覧を取得"""
+    """node_configsテーブルから '役割名:ポート' のマッピングを取得"""
     db = DBBridge()
     mapping = {}
-    my_id = os.getenv("HUB_SYS_ID", "hub_001") 
+    my_id = os.getenv("SYS_ID", "hub_001") 
 
     try:
-        # DBBridge経由で設定取得
         rows = db.fetch_node_config(my_id)
         if rows:
             for r in rows:
-                v_type = r['vst_type']
+                # 2026仕様: vst_type ではなく vst_role_name を識別子にする
+                role_name = r.get('vst_role_name')
                 params = r.get('val_params', {})
                 port = params.get("net_port")
-                if port:
-                    mapping[v_type] = int(port)
+                if role_name and port:
+                    mapping[role_name] = int(port)
+        
+        logger.info(f"📋 Loaded Role-Port Mapping: {mapping}")
     except Exception as e:
         logger.error(f"❌ [Mapping Error] {e}")
-        # フォールバック（予備）
+        # フォールバック
         mapping = {"cam_main": 5005, "cam_sub": 5006}
             
     return mapping
@@ -179,16 +181,13 @@ def generate_mjpeg(port):
 
 @app.route('/stream/<target>')
 def stream(target):
+    # CameraUnit.js から /stream/cam_main 等でリクエストが来る
     mapping = get_vst_mapping()
-    
-    # 互換性維持用のエイリアス
-    if target == "pi": target = "cam_main"
-    if target == "usb": target = "cam_sub"
-
     port = mapping.get(target)
+
     if not port:
-        logger.error(f"❌ Target '{target}' not found in configs.")
-        return f"Target '{target}' not found.", 404
+        logger.error(f"❌ Target Role '{target}' not found in configs.")
+        return f"Role '{target}' not found.", 404
     
     return Response(generate_mjpeg(port),
                     mimetype='multipart/x-mixed-replace; boundary=frame')

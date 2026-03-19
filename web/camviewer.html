@@ -19,24 +19,21 @@
 
     <main id="vst-rack"></main>
 
-    <script src="js/plugins/camera-unit.js"></script>
     <script src="js/vst-manager.js"></script>
 
     <script>
-        // URLのパラメータから id を取得 (?id=node_001 等)
-        // 指定がない場合はエラーにするか、デフォルトを表示
         const urlParams = new URLSearchParams(window.location.search);
         const sys_ID = urlParams.get('sys_id');
 
         if (!sys_ID) {
             alert("ERROR: Node ID is not specified.");
-            // 必要に応じて一覧画面へリダイレクト
-            // window.location.href = 'sys_monitor.php';
         }
 
-        window.addEventListener('DOMContentLoaded', () => {
+        window.addEventListener('DOMContentLoaded', async () => {
+            // マネージャーのインスタンス化
             window.vstManagerInstance = new VstManager(sys_ID);
-            window.vstManagerInstance.init();
+            // 💡 initを待機することで、動的ロード完了後に処理が進むようにする
+            await window.vstManagerInstance.init();
         });
     </script>
 </body>
