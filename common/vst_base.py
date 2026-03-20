@@ -16,14 +16,20 @@ class WildLinkVSTBase:
         self.log_code = 200
         self.last_sense_time = 0
 
+    def notify_manager(self, event_type="status_changed"):
+        """
+        💡 自身の状態変化をMainManagerに通知する。
+        MainManagerの on_event を経由して、DB更新やMQTT送信がトリガーされます。
+        """
+        if self.event_callback:
+            self.event_callback(self.role, event_type)
+
     def control(self, payload):
         """外部（MQTTや他ユニット）からの命令を処理"""
-        # act_ で始まる命令を自分自身のプロパティに書き込む
         for key, value in payload.items():
             if key.startswith("act_") or key.startswith("val_"):
                 setattr(self, key, value)
         
-        # 継承先で具体的なアクション（ストリーム開始など）を実装
         self.execute_logic(payload)
 
     def execute_logic(self, payload):
@@ -34,8 +40,6 @@ class WildLinkVSTBase:
         """MainManagerから 0.1s おきに呼ばれる"""
         if not self.val_enabled:
             return
-        
-        # 必要ならここで定期的な処理を行う
         pass
 
     def report(self):
@@ -43,7 +47,6 @@ class WildLinkVSTBase:
         data = {}
         for key, value in self.__dict__.items():
             if any(key.startswith(pre) for pre in ["env_", "sys_", "val_", "log_", "net_", "act_"]):
-                # シリアライズ可能なデータのみ抽出
                 if isinstance(value, (str, int, float, bool, list, dict)) or value is None:
                     data[key] = value
         return data

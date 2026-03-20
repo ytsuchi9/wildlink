@@ -5,7 +5,7 @@ header('Content-Type: application/json');
 
 /**
  * WildLink 2026 Command Tracker
- * 役割: send_cmd.php で発行したコマンドの進捗（pending -> sent -> success/error）を追跡する
+ * 役割: send_cmd.php で発行したコマンドの進捗を追跡する
  */
 
 $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
@@ -15,7 +15,7 @@ if ($id <= 0) {
     exit;
 }
 
-// 2026年仕様：詳細な実行結果（val_res_payload）も含めて取得
+// 必要な情報を取得
 $sql = "SELECT 
             val_status, 
             log_code, 
@@ -32,25 +32,22 @@ try {
 
     if ($data) {
         // --- 💡 2026 状態判定補正ロジック ---
-        // completed_at が NULL の間は、DB上の val_status が何であれ 
-        // フロントエンドには 'pending' として返し、JSの判定待ちを継続させる。
-        if (empty($data['completed_at'])) {
+        // 1. まだ完了時刻(completed_at)が入っていないなら、問答無用で 'pending'。
+        // 2. ステータスがNULL、または空文字の場合も 'pending' として扱う。
+        if (empty($data['completed_at']) || empty($data['val_status']) || $data['val_status'] === 'NULL') {
             $data['val_status'] = 'pending';
         }
 
-        // JSONデータ（実行結果の詳細）があればデコード
+        // 実行結果詳細のデコード
         if (!empty($data['val_res_payload'])) {
             $data['detail'] = json_decode($data['val_res_payload'], true);
         } else {
             $data['detail'] = null;
         }
 
-        // 数値型を保証
         $data['log_code'] = (int)$data['log_code'];
-
         echo json_encode($data);
     } else {
-        // ID自体が見つからない場合
         http_response_code(404);
         echo json_encode([
             "val_status" => "not_found", 

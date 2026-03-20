@@ -21,12 +21,13 @@ logger = get_logger("main_manager")
 class MainManager:
     def __init__(self, sys_id):
         self.sys_id = sys_id
+        # ロガーをノード名入りで再取得
+        self.logger = get_logger(f"{sys_id}:main_manager")
         self.db = DBBridge()
-        self.units = {}         # キーを vst_role_name に変更
-        self.links = []          
-        self.active_timers = {}  
-        self.current_config_raw = ""  
-        
+        self.units = {}
+        self.links = []
+        self.active_timers = {}
+        self.current_config_raw = ""
         self.last_sync_time = 0
         self.sync_interval = 30
         
@@ -62,23 +63,25 @@ class MainManager:
             # 役割名(target_role)でユニットを検索
             if target_role in self.units:
                 try:
-                    self.units[target_role].execute_logic(payload)
+                    # 💡 実行！ここでの成否を判定
+                    success = self.units[target_role].execute_logic(payload)
                     if cmd_id:
-                        # 成功報告 (role情報を添えて)
+                        status_str = "success" if success else "error"
                         self.mqtt.client.publish(res_topic, json.dumps({
                             "sys_id": self.sys_id,
                             "cmd_id": cmd_id, 
-                            "role": target_role,
-                            "val_status": "success", 
-                            "log_code": 200,
+                            "role": target_role, # 💡 roleを付加
+                            "val_status": status_str, 
+                            "log_code": 200 if success else 500,
                             "target_status": getattr(self.units[target_role], 'val_status', 'unknown')
                         }))
                 except Exception as unit_e:
-                    logger.error(f"❌ [{target_role}] Execution failed: {unit_e}")
+                    self.logger.error(f"❌ [{target_role}] Execution failed: {unit_e}")
                     if cmd_id:
                         self.mqtt.client.publish(res_topic, json.dumps({
                             "sys_id": self.sys_id,
                             "cmd_id": cmd_id, 
+                            "role": target_role, # 💡 エラー時もroleを付加
                             "val_status": "error", 
                             "log_code": 500, 
                             "log_msg": str(unit_e)

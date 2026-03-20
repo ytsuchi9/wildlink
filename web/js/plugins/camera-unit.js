@@ -1,22 +1,20 @@
+// クラス定義
 class CameraUnit {
     constructor(conf, manager) {
         this.conf = conf;
         this.manager = manager;
-        // 2026年仕様: vst_role_name を唯一の識別子にする（cam_main, cam_sub等）
         this.name = conf.vst_role_name; 
         
         const params = conf.val_params || {};
-        // ホスト名は基本現在のドメイン。ポートは MJPEG Bridge 標準の 8080
         this.streamHost = params.host || window.location.hostname; 
         this.streamPort = "8080"; 
+        this.retryCount = 0;
     }
 
-    // 初期UI構築
     initUI() {
         const ctrl = document.getElementById(`controls-${this.name}`);
         if (!ctrl) return;
         
-        // 2026年仕様: ボタン生成とイベントバインド
         ctrl.innerHTML = `
             <button class="btn-control btn-start">STREAM START</button>
             <button class="btn-control btn-stop">STREAM STOP</button>
@@ -25,12 +23,10 @@ class CameraUnit {
         const btnStart = ctrl.querySelector('.btn-start');
         const btnStop = ctrl.querySelector('.btn-stop');
 
-        // manager.nodeId を使用してコマンド送信
-        btnStart.onclick = (e) => CameraUnit.sendCmd(this.manager.nodeId, this.name, 'start', e);
-        btnStop.onclick = (e) => CameraUnit.sendCmd(this.manager.nodeId, this.name, 'stop', e);
+        btnStart.onclick = (e) => this.sendCmd(this.manager.nodeId, this.name, 'start', e);
+        btnStop.onclick = (e) => this.sendCmd(this.manager.nodeId, this.name, 'stop', e);
     }
 
-    // 状態更新（VstManagerから3秒おきに呼ばれる）
     update(unitData) {
         const el = document.getElementById(`plugin-${this.name}`);
         const disp = document.getElementById(`disp-${this.name}`);
@@ -38,12 +34,11 @@ class CameraUnit {
         
         if (!el || !disp || !content) return;
 
-        // streaming または success の場合に映像を表示
         const isStreaming = (unitData.val_status === 'streaming' || unitData.val_status === 'success');
         disp.innerText = (unitData.val_status || "IDLE").toUpperCase();
 
         if (isStreaming) {
-            el.classList.add('u3'); // アクティブスタイル（CSS側で定義）
+            el.classList.add('u3'); 
             this.ensureStream(content);
         } else {
             el.classList.remove('u3');
@@ -53,22 +48,27 @@ class CameraUnit {
 
     ensureStream(container) {
         let img = document.getElementById(`view-${this.name}`);
-        
+        const buildUrl = () => `http://${this.streamHost}:${this.streamPort}/stream/${this.name}?t=${Date.now()}`;
+
         if (!img) {
+            console.log(`[${this.name}] Creating stream element...`);
             img = document.createElement('img');
             img.id = `view-${this.name}`;
             img.style.width = "100%";
             img.className = "camera-stream";
             
-            // 2026規格URL: http://[IP]:8080/stream/[role_name]
-            const buildUrl = () => `http://${this.streamHost}:${this.streamPort}/stream/${this.name}?t=${Date.now()}`;
-
             img.onerror = () => {
-                console.warn(`[${this.name}] Stream load error. Retrying...`);
-                setTimeout(() => {
-                    const currentImg = document.getElementById(`view-${this.name}`);
-                    if (currentImg) currentImg.src = buildUrl();
-                }, 1500); 
+                // 💡 映像が出ない(黒い)場合は、1.5秒おきに最大5回リトライする
+                if (this.retryCount < 10) {
+                    this.retryCount++;
+                    const delay = 2000; // 2秒おき
+                    console.warn(`[${this.name}] Stream not ready (Attempt ${this.retryCount}). Retrying...`);
+                    setTimeout(() => {
+                        if (document.getElementById(`view-${this.name}`)) {
+                            img.src = buildUrl();
+                        }
+                    }, 1500);
+                }
             };
 
             img.src = buildUrl();
@@ -80,17 +80,15 @@ class CameraUnit {
     removeStream(container) {
         const img = document.getElementById(`view-${this.name}`);
         if (img) {
-            img.src = ""; // 接続を明示的に切断
+            img.src = ""; 
             img.remove();
         }
+        this.retryCount = 0; // リセット
         const disp = document.getElementById(`disp-${this.name}`);
         if (disp) disp.style.fontSize = "1.1rem";
     }
 
-    /**
-     * コマンド送信静的メソッド
-     */
-    static async sendCmd(nodeId, role, action, event) {
+    async sendCmd(nodeId, role, action, event) {
         const btn = event.target;
         const originalText = btn.innerText;
         const originalBg = btn.style.backgroundColor;
@@ -102,45 +100,38 @@ class CameraUnit {
             const formData = new URLSearchParams();
             formData.append('sys_id', nodeId); 
             formData.append('cmd_type', 'vst_control');
-
-            // 2026年仕様: payloadに role と action を含める
-            const cmdData = { 
-                "role": role,
-                "action": action,
-                "act_run": (action === 'start')
-            };
-            formData.append('cmd_json', JSON.stringify(cmdData));
+            formData.append('cmd_json', JSON.stringify({ "role": role, "action": action, "act_run": (action === 'start') }));
 
             const res = await fetch('send_cmd.php', { method: 'POST', body: formData });
             const data = await res.json();
             
-            if (data.error) throw new Error(data.error);
-            
-            const cmdId = data.command_id;
-
-            // コマンドの成否を追跡
             const track = async () => {
-                const check = await fetch(`get_command_status.php?id=${cmdId}`);
+                const check = await fetch(`get_command_status.php?id=${data.command_id}`);
                 const status = await check.json();
                 
                 if (status.val_status === 'success') {
                     btn.innerText = "SUCCESS";
                     btn.style.backgroundColor = "#28a745";
-                    setTimeout(() => CameraUnit.resetBtn(btn, originalText, originalBg), 2000);
-                } else if (status.val_status === 'error' || (status.log_code && status.log_code >= 400)) {
+                    
+                    // 💡 SUCCESSが出た＝Node側が起動完了したので、ここで映像リクエストを開始
+                    if (action === 'start') {
+                        this.retryCount = 0;
+                        const content = document.getElementById(`content-${this.name}`);
+                        if (content) this.ensureStream(content);
+                    }
+
+                    setTimeout(() => this.constructor.resetBtn(btn, originalText, originalBg), 2000);
+                } else if (status.val_status === 'error') {
                     btn.innerText = "FAILED";
                     btn.style.backgroundColor = "#dc3545";
-                    setTimeout(() => CameraUnit.resetBtn(btn, originalText, originalBg), 3000);
+                    setTimeout(() => this.constructor.resetBtn(btn, originalText, originalBg), 3000);
                 } else {
-                    setTimeout(track, 800); // 継続監視
+                    setTimeout(track, 800);
                 }
             };
             track();
-
         } catch (e) { 
-            console.error("Command Error:", e);
-            btn.innerText = "ERROR";
-            setTimeout(() => CameraUnit.resetBtn(btn, originalText, originalBg), 3000);
+            this.constructor.resetBtn(btn, "ERROR", "#dc3545");
         }
     }
 
@@ -150,5 +141,9 @@ class CameraUnit {
         btn.style.backgroundColor = bg;
     }
 }
-// js/plugins/camera-unit.js の最後に追加
+
+// 💡 画像1の「Class not found」対策：即座にwindowに登録し、マネージャーに通知する
 window.CameraUnit = CameraUnit;
+if (window.VstManager && typeof window.VstManager.onPluginReady === 'function') {
+    window.VstManager.onPluginReady('CameraUnit');
+}
