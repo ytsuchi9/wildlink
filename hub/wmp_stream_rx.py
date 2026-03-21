@@ -4,6 +4,7 @@ import socket
 import threading
 import time
 import json
+import paho.mqtt.client as mqtt
 from flask import Flask, Response, request
 from dotenv import load_dotenv
 
@@ -19,7 +20,7 @@ from wmp_core import WMPHeader
 from db_bridge import DBBridge
 from logger_config import get_logger
 
-# ロガー初期化 (log_type="stream_rx")
+# ロガー初期化
 logger = get_logger("stream_rx")
 
 # .envの読み込み
@@ -34,18 +35,26 @@ class StreamStore:
         self.last_update = {}   # {port: timestamp}
         self.assembly = {}      # {port: [chunks]}
         self.is_streaming = {}  # {port: bool}
-        self.port_to_sysid = {} # {port: "node_001"} 💡動的識別のために追加
+        self.port_to_sysid = {} 
+        self.port_to_role = {}  # 💡 逆引き用 {5005: "cam_main"}
         self.db = DBBridge()
         
+        # MQTTクライアントの初期化 (WES規格用)
+        self.mqtt_client = mqtt.Client()
+        try:
+            self.mqtt_client.connect("localhost", 1883, 60)
+            self.mqtt_client.loop_start()
+            logger.info("✅ [MQTT] Connected to local broker for WES events.")
+        except Exception as e:
+            logger.error(f"❌ [MQTT] Connection failed: {e}")
+
         # 死活監視スレッドを起動
         threading.Thread(target=self._monitor_heartbeat, daemon=True).start()
 
     def _monitor_heartbeat(self):
-        """パケット途絶を監視し、自動でステータスを idle に落とす"""
         while True:
             now = time.time()
             for port in list(self.last_update.keys()):
-                # 5秒以上更新がない、かつ現在 'streaming' 状態なら idle へ
                 if self.is_streaming.get(port) and (now - self.last_update.get(port, 0) > 5.0):
                     sys_id = self.port_to_sysid.get(port, "unknown")
                     logger.warning(f"⏰ [Monitor] Port {port} ({sys_id}) timed out. Setting to idle.")
@@ -54,17 +63,16 @@ class StreamStore:
             time.sleep(2)
 
     def sync_db_status(self, port, sys_id, status):
-        """node_status_current テーブルを更新する"""
-        mapping = get_vst_mapping() 
-        vst_type = next((k for k, v in mapping.items() if v == port), None)
-        
-        if not vst_type or sys_id == "unknown":
-            return
+        """DB更新と同時に MQTT でストップイベントを飛ばす"""
+        role_name = self.port_to_role.get(port)
+        if not role_name or sys_id == "unknown": return
 
         try:
-            # 💡 修正：TARGET_NODE_ID の固定をやめ、パケットから得た sys_id を使用
-            self.db.update_vst_status(sys_id, vst_type, status)
-            logger.info(f"✅ [DB Sync] {sys_id}:{vst_type} ({port}) -> {status}")
+            self.db.update_vst_status(sys_id, role_name, status)
+            if status == "idle":
+                # WES規格: 停止も通知
+                self.publish_wes_event(role_name, "stream_stop")
+            logger.info(f"✅ [DB Sync] {sys_id}:{role_name} -> {status}")
         except Exception as e:
             logger.error(f"❌ [DB Sync Error] {e}")
 
@@ -74,17 +82,34 @@ class StreamStore:
         self.last_update[port] = time.time()
         self.port_to_sysid[port] = sys_id
         
+        # 💡 ストリーミング開始の瞬間を検知
         if not self.is_streaming.get(port):
             self.is_streaming[port] = True
-            # ストリーミング開始をDBに通知
+            role_name = self.port_to_role.get(port)
+            
+            # 1. DBステータスを streaming に
             self.sync_db_status(port, sys_id, "streaming")
+            
+            # 2. 💡 WES規格: MQTTで stream_ready をブロードキャスト
+            # これを Web(JS) が受けて映像表示を開始する
+            if role_name:
+                self.publish_wes_event(role_name, "stream_ready")
+
+    def publish_wes_event(self, role, event_type):
+        """WildLink Event Standard (WES) に基づくメッセージ発行"""
+        payload = {
+            "event": event_type,
+            "role": role,
+            "time": int(time.time()),
+            "msg": f"Stream event: {event_type}"
+        }
+        topic = f"_local/vst/event" # VstManagerが購読しているトピック
+        self.mqtt_client.publish(topic, json.dumps(payload))
+        logger.info(f"🔔 [WES] Published '{event_type}' for {role} to {topic}")
 
     def get_frame(self, port, timeout=3.0):
-        """Flask配信時に呼ばれる"""
-        if port not in self.frames or self.frames[port] is None:
-            return None
-        if time.time() - self.last_update.get(port, 0) > timeout:
-            return None
+        if port not in self.frames or self.frames[port] is None: return None
+        if time.time() - self.last_update.get(port, 0) > timeout: return None
         return self.frames[port]
 
     def clear(self, port):
@@ -93,30 +118,26 @@ class StreamStore:
 
 store = StreamStore()
 
-# --- 3. マッピング取得 (Role-Based版) ---
+# --- 3. マッピング取得 ---
 def get_vst_mapping():
-    """node_configsテーブルから '役割名:ポート' のマッピングを取得"""
     db = DBBridge()
     mapping = {}
     my_id = os.getenv("SYS_ID", "hub_001") 
-
     try:
         rows = db.fetch_node_config(my_id)
         if rows:
             for r in rows:
-                # 2026仕様: vst_type ではなく vst_role_name を識別子にする
                 role_name = r.get('vst_role_name')
                 params = r.get('val_params', {})
                 port = params.get("net_port")
                 if role_name and port:
-                    mapping[role_name] = int(port)
-        
+                    p_int = int(port)
+                    mapping[role_name] = p_int
+                    store.port_to_role[p_int] = role_name # 逆引きもセット
         logger.info(f"📋 Loaded Role-Port Mapping: {mapping}")
     except Exception as e:
         logger.error(f"❌ [Mapping Error] {e}")
-        # フォールバック
         mapping = {"cam_main": 5005, "cam_sub": 5006}
-            
     return mapping
 
 # --- 4. 通信レイヤー (UDP) ---
@@ -130,37 +151,31 @@ def udp_receiver(port):
     while True:
         try:
             data, addr = sock.recvfrom(4096)
-            # WMPHeader.unpack を使用してパケットを解析
             res = WMPHeader.unpack(data)
-            sys_id = res[1]      # パケット内蔵のノードID (sys_id)
-            p_len = res[5]       # ペイロード長
-            f_idx = res[7]       # 分割インデックス
-            f_total = res[8]     # 総分割数
-            
+            sys_id = res[1]
+            p_len = res[5]
+            f_idx = res[7]
+            f_total = res[8]
             payload = data[32:32+p_len]
 
             if f_total == 1:
-                # 単一パケットの場合
                 store.update_frame(port, sys_id, payload)
             else:
-                # 分割パケットの結合処理
                 if f_idx == 0:
                     store.assembly[port] = [None] * f_total
                 
                 if port in store.assembly:
                     store.assembly[port][f_idx] = payload
-                    # 全パーツが揃ったか確認
                     if all(v is not None for v in store.assembly[port]):
                         full_frame = b"".join(store.assembly[port])
                         store.update_frame(port, sys_id, full_frame)
                         store.assembly[port] = []
-        except Exception as e:
-            # 頻発するエラーはスルー、重大なものだけログ
+        except Exception:
             time.sleep(0.001)
 
 # --- 5. 配信レイヤー (HTTP MJPEG) ---
 def generate_mjpeg(port):
-    logger.info(f"🎬 [WMP RX] Client connected to port {port}")
+    logger.info(f"🎬 [WMP RX] Client connected to MJPEG Bridge on port {port}")
     last_h = None
     try:
         while True:
@@ -172,35 +187,27 @@ def generate_mjpeg(port):
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
             else:
-                # 映像が途切れたらループ終了
-                logger.warning(f"⚠️ [WMP RX] No data on port {port}. Closing stream.")
+                logger.warning(f"⚠️ [WMP RX] Stream timed out on port {port}.")
                 break
-            time.sleep(0.04) # 約25fps
+            time.sleep(0.04)
     finally:
-        store.clear(port)
+        # クライアントが切断しても、UDP受信スレッドが動いている限り store.frames は維持される
+        pass
 
 @app.route('/stream/<target>')
 def stream(target):
-    # CameraUnit.js から /stream/cam_main 等でリクエストが来る
     mapping = get_vst_mapping()
     port = mapping.get(target)
-
     if not port:
-        logger.error(f"❌ Target Role '{target}' not found in configs.")
         return f"Role '{target}' not found.", 404
-    
     return Response(generate_mjpeg(port),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
-    # 起動時に必要なポートのマッピングを取得
     initial_mapping = get_vst_mapping()
-    
-    # 各ポートごとに受信スレッドを開始
     for p in initial_mapping.values():
         t = threading.Thread(target=udp_receiver, args=(p,), daemon=True)
         t.start()
         
     logger.info(f"🚀 [HTTP] WildLink MJPEG Bridge started on port 8080")
-    # Flaskサーバ起動
     app.run(host='0.0.0.0', port=8080, threaded=True, debug=False)

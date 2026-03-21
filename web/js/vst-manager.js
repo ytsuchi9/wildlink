@@ -1,8 +1,13 @@
+/**
+ * VstManager: WildLink Event Standard (WES) 対応版
+ * 役割: プラグインのロード、描画管理、およびMQTTイベントの各ユニットへの振り分け（Dispatcher）
+ */
 class VstManager {
     constructor(nodeId) {
         this.nodeId = nodeId;
         this.units = {}; 
-        this.loadedScripts = new Set(); // 重複ロード防止用
+        this.loadedScripts = new Set(); 
+        this.mqttClient = null;
     }
 
     async init() {
@@ -13,28 +18,94 @@ class VstManager {
             // 1. 必要なJSファイルを動的にロード
             await this.loadRequiredScripts(configs);
 
-            // 💡 2. クラスが window に登録されるまでわずかに待機 & 存在確認
-            // (非同期ロード直後は window に反映されるまでラグがあるため)
+            // クラス登録待ち
             await new Promise(resolve => setTimeout(resolve, 50)); 
 
-            // 3. 描画開始
+            // 2. 描画開始
             this.renderRack(configs);
+
+            // 💡 3. MQTTのセットアップ (WES標準化の核)
+            this.setupMqtt();
+
+            // 4. 定期ポーリング開始 (バックアップとして維持)
             this.startLoop();
         } catch (e) { 
-            console.error("Manager Init Error:", e); 
+            console.error("[VstManager] Init Error:", e); 
         }
     }
 
     /**
-     * DBの構成を見て、必要なプラグインJSを動的にロードする
+     * MQTTブローカーへの接続とイベントハンドリングのセットアップ
      */
+    setupMqtt() {
+        const brokerHost = window.location.hostname;
+        const brokerPort = 9001; // WebSocket用ポート (websockify)
+        const clientId = `web_client_${Math.random().toString(16).substr(2, 8)}`;
+
+        try {
+            // 💡 修正ポイント1: 第3引数を空文字列 "" にし、第4引数に clientId を渡す
+            // Paho.MQTT.Client(host, port, path, clientId)
+            this.mqttClient = new Paho.MQTT.Client(brokerHost, brokerPort, "", clientId);
+
+            // 接続が切れた時の処理
+            this.mqttClient.onConnectionLost = (responseObject) => {
+                if (responseObject.errorCode !== 0) {
+                    console.warn(`[VstManager] MQTT Lost: ${responseObject.errorMessage}`);
+                    setTimeout(() => this.setupMqtt(), 5000); 
+                }
+            };
+
+            // メッセージ受信時の振り分け
+            this.mqttClient.onMessageArrived = (message) => {
+                this.dispatchMqttEvent(message.destinationName, message.payloadString);
+            };
+
+            // 💡 修正ポイント2: connectオプションの最適化
+            this.mqttClient.connect({
+                onSuccess: () => {
+                    console.log("[VstManager] MQTT Connected.");
+                    // トピック購読
+                    this.mqttClient.subscribe("_local/#");
+                    this.mqttClient.subscribe(`nodes/${this.nodeId}/#`);
+                },
+                onFailure: (e) => {
+                    console.error("[VstManager] MQTT Connect Failed:", e);
+                },
+                useSSL: false,
+                keepAliveInterval: 30,
+                mqttVersion: 4,      // 💡 MQTT 3.1.1 を強制
+                cleanSession: true
+            });
+        } catch (e) {
+            console.error("[VstManager] MQTT Setup Error:", e);
+        }
+    }
+
+    /**
+     * 受信したMQTTメッセージを適切なUnitインスタンスへ届ける
+     */
+    dispatchMqttEvent(topic, payload) {
+        try {
+            const data = JSON.parse(payload);
+            const targetRole = data.role;
+
+            if (!targetRole) return;
+
+            // 担当ユニットを特定してイベントを丸投げ
+            const unit = this.units[targetRole];
+            if (unit && unit.instance && typeof unit.instance.onEvent === 'function') {
+                console.log(`[VstManager] Dispatching event [${data.event}] to [${targetRole}]`);
+                unit.instance.onEvent(data);
+            }
+        } catch (e) {
+            console.warn("[VstManager] Failed to dispatch MQTT event. Payload might not be JSON.", e);
+        }
+    }
+
     async loadRequiredScripts(configs) {
         const loadPromises = [];
-
         configs.forEach(conf => {
             if (parseInt(conf.is_active) === 0) return;
-
-            // クラス名(Camera等)からファイル名を生成 (js/plugins/camera-unit.js)
             const scriptName = `${conf.vst_class.toLowerCase()}-unit.js`;
             const scriptPath = `js/plugins/${scriptName}`;
 
@@ -43,25 +114,15 @@ class VstManager {
                 this.loadedScripts.add(scriptPath);
             }
         });
-
         return Promise.all(loadPromises);
     }
 
-    /**
-     * scriptタグをDOMに注入し、ロード完了を待機するPromise
-     */
     injectScript(path) {
         return new Promise((resolve) => {
             const script = document.createElement('script');
             script.src = path;
-            script.onload = () => {
-                console.log(`[VstManager] Plugin loaded: ${path}`);
-                resolve();
-            };
-            script.onerror = () => {
-                console.warn(`[VstManager] Plugin failed to load: ${path}`);
-                resolve(); // 失敗しても全体の初期化は止めない
-            };
+            script.onload = () => resolve();
+            script.onerror = () => resolve();
             document.head.appendChild(script);
         });
     }
@@ -72,21 +133,17 @@ class VstManager {
         rack.innerHTML = '';
 
         configs.forEach(conf => {
-            // DB管理上で無効（is_active=0）なら、枠すら作らずスキップ
             if (parseInt(conf.is_active) === 0) return;
 
             const roleName = conf.vst_role_name;
             const displayName = conf.vst_description || roleName.toUpperCase();
             const hwInfo = conf.hw_bus_addr ? `(${conf.hw_bus_addr})` : '';
             
-            // 1. 共通の枠（シャーシ）を作成
             const div = document.createElement('div');
             div.id = `plugin-${roleName}`;
             
-            // val_enabled が 0 なら 'unit-disabled' クラスを付与してグレーアウト
             const isEnabled = (parseInt(conf.val_enabled) === 1);
-            const enabledClass = isEnabled ? '' : 'unit-disabled';
-            div.className = `vst-plugin ${enabledClass}`;
+            div.className = `vst-plugin ${isEnabled ? '' : 'unit-disabled'}`;
             
             div.innerHTML = `
                 <div class="plugin-header">
@@ -102,40 +159,23 @@ class VstManager {
             `;
             rack.appendChild(div);
 
-            // 2. インスタンス生成
             let pluginInstance = null;
             if (isEnabled) {
-                // vst_class (Camera, Sensor, Switch) からクラス名を生成
-                const className = `${conf.vst_class}Unit`;
+                // クラス名の正規化 (頭文字大文字)
+                const className = conf.vst_class.charAt(0).toUpperCase() + conf.vst_class.slice(1).toLowerCase() + "Unit";
                 const TargetClass = window[className];
 
                 if (typeof TargetClass === 'function') {
                     try {
                         pluginInstance = new TargetClass(conf, this);
-                        console.log(`[VstManager] Successfully instantiated ${className} for [${roleName}]`);
-                    } catch (e) {
-                        console.error(`[VstManager] Failed to create instance of ${className} for ${roleName}:`, e);
-                    }
-                } else {
-                    // ここでエラーが出る場合は、JSファイルのロード順か、windowへの登録漏れです
-                    console.error(`[VstManager] Class [${className}] not found in window object. Check if ${conf.vst_class.toLowerCase()}-unit.js is loaded correctly.`);
+                    } catch (e) { console.error(e); }
                 }
             }
 
-            // 3. 管理リストへ登録
-            this.units[roleName] = {
-                el: div,
-                config: conf,
-                instance: pluginInstance
-            };
+            this.units[roleName] = { el: div, config: conf, instance: pluginInstance };
 
-            // 4. 初期描画 (ボタンの配置など)
             if (pluginInstance && typeof pluginInstance.initUI === 'function') {
-                try {
-                    pluginInstance.initUI();
-                } catch (e) {
-                    console.error(`[VstManager] Error during initUI for ${roleName}:`, e);
-                }
+                pluginInstance.initUI();
             }
         });
     }
@@ -174,6 +214,6 @@ class VstManager {
                     }
                 });
             }
-        } catch (e) { console.error("Refresh Error:", e); }
+        } catch (e) { /* silent fail */ }
     }
 }
