@@ -22,18 +22,15 @@ logger = get_logger("hub_manager")
 class WildLinkHubManager:
     def __init__(self):
         self.db = DBBridge()
-        # 2026年仕様: 最新のCallback APIを使用
+        # 最新のAPIバージョンを使用
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id="wildlink_hub")
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         
-        # 子プロセス管理用
         self.processes = {
-            # Receiver は hub_001 として振る舞う
             "stream_rx": {"path": os.path.join(current_dir, "wmp_stream_rx.py"), "proc": None, "id": "hub_001"},
             "status_eng": {"path": os.path.join(current_dir, "status_engine.py"), "proc": None, "id": "hub_001"}
         }
-        
         self.running = True
 
     def _spawn_process(self, name):
@@ -76,39 +73,35 @@ class WildLinkHubManager:
                     proc_info["proc"] = None
 
     def command_dispatcher_loop(self):
-        """DBから pending コマンドを拾って送信する運び屋"""
+        """
+        DBからの予約コマンド（スケジュール実行など）を拾うループ。
+        send_cmd.php (Web) を通らないコマンドのバックアップとして機能。
+        """
         logger.info("📨 Command Dispatcher Loop is active.")
         while self.running:
             try:
-                # DBBridge.fetch_pending_commands() が 
-                # SELECT * FROM node_commands WHERE val_status='pending' 
-                # を実行することを前提としています
                 commands = self.db.fetch_pending_commands() 
                 for cmd in commands:
                     cmd_id = cmd['id']
                     target_sys = cmd['sys_id'] 
-                    role_name = cmd.get('vst_role_name', 'default') # DBのカラムから直接取得
-                    cmd_type = cmd.get('cmd_type', 'vst_control')
+                    # WES 2026: DBのカラム名に合わせた取得 (vst_role_name)
+                    role_name = cmd.get('vst_role_name', 'system') 
                     
-                    # 宛先トピック: vst/{node_001}/cmd/vst_control
-                    topic = f"vst/{target_sys}/cmd/{cmd_type}"
+                    # 💡 WES 2026 トピック形式: nodes/{sys_id}/{role}/cmd
+                    topic = f"nodes/{target_sys}/{role_name}/cmd"
                     
                     try:
                         payload_dict = json.loads(cmd['cmd_json']) if cmd['cmd_json'] else {}
                     except:
-                        payload_dict = {"raw": cmd['cmd_json']}
+                        payload_dict = {"raw_payload": cmd['cmd_json']}
                     
-                    # 2026年仕様: ペイロードの正規化
-                    payload_dict['sys_id'] = target_sys
                     payload_dict['cmd_id'] = cmd_id
-                    payload_dict['role'] = role_name # 実行対象を明示
+                    payload_dict['role'] = role_name
                     
                     json_payload = json.dumps(payload_dict)
-
-                    logger.info(f"📤 Dispatching [ID:{cmd_id}] Role:{role_name} to {topic}")
+                    logger.info(f"📤 Dispatching [ID:{cmd_id}] to {topic}")
                     self.client.publish(topic, json_payload, qos=1)
                     
-                    # DB側のステータスを "sent" に更新
                     self.db.update_command_status(cmd_id, "sent")
                     
             except Exception as e:
@@ -118,27 +111,39 @@ class WildLinkHubManager:
 
     def on_connect(self, client, userdata, flags, rc):
         logger.info(f"🌐 Hub Manager Connected (rc:{rc})")
-        # ノードからの実行結果(res)と、ハブ自身への命令(cmd)を両方監視
-        client.subscribe("vst/+/res") 
-        client.subscribe(f"vst/{os.getenv('SYS_ID')}/cmd/+")
+        # 💡 WES 2026 階層: 全ノードの応答(res)と通知(event)をまとめて監視
+        client.subscribe("nodes/+/+/res")
+        client.subscribe("nodes/+/+/event")
+        # ハブ自身(hub_001)への直接命令も監視
+        client.subscribe(f"nodes/{os.getenv('SYS_ID')}/+/cmd")
 
     def on_message(self, client, userdata, msg):
-        """Nodeからの実行結果(res)を受け取りDBを更新"""
+        """
+        Nodeからの JSON パッチを受け取り、DBの状態を「部分更新」する
+        """
         try:
+            # トピック解析 (例: nodes/node_001/cam_main/res)
+            parts = msg.topic.split('/')
+            if len(parts) < 4: return
+            
+            sys_id = parts[1]
+            role   = parts[2]
+            msg_type = parts[3] # res, event, cmd
+            
             payload = json.loads(msg.payload.decode())
-            sys_id = payload.get('sys_id')
-            role = payload.get('role', 'unknown')
-            status = payload.get('val_status', 'unknown')
+            logger.info(f"📥 [{msg_type}] from [{sys_id}:{role}] status:{payload.get('val_status')}")
+
+            # 1. 最新ステータスの書き戻し (DBBridge.update_node_status)
+            # WES 2026コンセプト: 届いた payload (JSON) をそのまま raw_data カラムへ
+            self.db.update_node_status(sys_id, role, payload)
             
-            logger.info(f"📥 Response from [{sys_id}] Role:[{role}] -> {status}")
-            
-            # DBの node_status_current を更新
-            # DBBridge側で「vst_role_name」に基づいたUPDATEが走るように実装してください
-            self.db.update_node_status(sys_id, payload)
-            
-            # もし cmd_id が含まれていれば、node_commands の最終ステータスも success にする
-            if 'cmd_id' in payload:
-                self.db.update_command_status(payload['cmd_id'], status)
+            # 2. コマンド完了通知の場合、履歴テーブルのステータスを更新
+            if msg_type == 'res' and 'cmd_id' in payload:
+                self.db.update_command_status(payload['cmd_id'], payload.get('val_status', 'success'))
+
+            # 3. イベント（動体検知など）の場合は、専用ログテーブルにも挿入
+            if msg_type == 'event':
+                self.db.insert_event_log(sys_id, role, payload)
 
         except Exception as e:
             logger.error(f"❌ Message Handler Error: {e}")

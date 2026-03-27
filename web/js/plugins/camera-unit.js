@@ -1,6 +1,6 @@
 /**
- * CameraUnit: WES (WildLink Event Standard) 対応版
- * 役割: 映像配信コマンドの送信、およびMQTTイベント(stream_ready)受信による映像表示
+ * CameraUnit: WES (WildLink Event Standard) 2026 対応版
+ * 役割: 映像配信コマンドの送信、およびMQTT経由のストリーム状態の同期
  */
 class CameraUnit {
     constructor(conf, manager) {
@@ -9,28 +9,42 @@ class CameraUnit {
         this.name = conf.vst_role_name; 
         
         const params = conf.val_params || {};
-        this.streamHost = params.host || window.location.hostname; 
+        // Hub(ストリーム配信元)のホストとポート。デフォルトはHubの8080番
+        this.streamHost = params.hub_ip || window.location.hostname; 
         this.streamPort = "8080"; 
+        
         this.retryCount = 0;
-        this.isWaitingReady = false; // Readyイベント待ちフラグ
+        this.isWaitingReady = false; 
     }
 
     /**
-     * WES標準メソッド: VstManagerからイベントが転送される
+     * WES標準イベントハンドラ: MainManager(WS経由)から受信したイベントを処理
      */
     onEvent(data) {
-        console.log(`[CameraUnit:${this.name}] Event received:`, data.event);
+        console.log(`[CameraUnit:${this.name}] Event: ${data.event}`, data);
 
-        if (data.event === 'stream_ready') {
-            // Python側で映像受信が確認された！
-            const content = document.getElementById(`content-${this.name}`);
-            if (content) {
+        switch (data.event) {
+            case 'streaming_started':
+                // Python(Node)側でキャプチャが開始された
                 this.isWaitingReady = false;
-                this.retryCount = 0; // リセットして開始
-                this.ensureStream(content);
-            }
-        } else if (data.event === 'stream_stop') {
-            this.removeStream();
+                this.retryCount = 0;
+                const contentStarted = document.getElementById(`content-${this.name}`);
+                if (contentStarted) {
+                    this.ensureStream(contentStarted);
+                }
+                break;
+
+            case 'streaming_stopped':
+                // 明示的な停止イベント
+                this.removeStream();
+                break;
+
+            case 'error':
+                // デバイスエラー等
+                console.error(`[CameraUnit:${this.name}] Node reported an error:`, data.log_msg);
+                this.updateUIStatus("ERROR", "#dc3545");
+                this.removeStream();
+                break;
         }
     }
 
@@ -39,19 +53,21 @@ class CameraUnit {
         if (!ctrl) return;
         
         ctrl.innerHTML = `
-            <button class="btn-control btn-start">STREAM START</button>
-            <button class="btn-control btn-stop">STREAM STOP</button>
+            <div class="btn-group w-100">
+                <button class="btn btn-sm btn-outline-primary btn-start">START</button>
+                <button class="btn btn-sm btn-outline-secondary btn-stop">STOP</button>
+            </div>
         `;
         
         const btnStart = ctrl.querySelector('.btn-start');
         const btnStop = ctrl.querySelector('.btn-stop');
 
-        btnStart.onclick = (e) => this.sendCmd(this.manager.nodeId, this.name, 'start', e);
-        btnStop.onclick = (e) => this.sendCmd(this.manager.nodeId, this.name, 'stop', e);
+        btnStart.onclick = (e) => this.sendCmd('start', e);
+        btnStop.onclick = (e) => this.sendCmd('stop', e);
     }
 
     /**
-     * 定期ポーリング（バックアップ）用
+     * 定期ポーリング(DB経由)による状態同期のバックアップ
      */
     update(unitData) {
         const el = document.getElementById(`plugin-${this.name}`);
@@ -60,50 +76,54 @@ class CameraUnit {
         
         if (!el || !disp || !content) return;
 
-        const status = (unitData.val_status || "IDLE").toUpperCase();
-        disp.innerText = status;
+        const status = (unitData.val_status || "idle").toLowerCase();
+        disp.innerText = status.toUpperCase();
 
-        if (status === 'STREAMING' || status === 'SUCCESS') {
-            el.classList.add('u3');
-            // Ready待ちでなく、まだ画像がない場合のみ、念のためチェック
+        // 状態に基づいたクラス付与（CSSで枠を光らせる等）
+        if (status === 'streaming') {
+            el.classList.add('u-active'); // ストリーミング中の強調スタイル
             if (!this.isWaitingReady && !document.getElementById(`view-${this.name}`)) {
                 this.ensureStream(content);
             }
+        } else if (status === 'error') {
+            el.classList.add('u-error');
+            this.removeStream();
         } else {
-            el.classList.remove('u3');
+            el.classList.remove('u-active', 'u-error');
             this.removeStream();
         }
     }
 
     /**
-     * 映像エレメントの生成と接続
+     * 映像エレメント(img)の生成。HubのMJPEGリレーに接続する。
      */
     ensureStream(container) {
         let img = document.getElementById(`view-${this.name}`);
+        // WES 2026: /stream/{role} の形式でHubへリクエスト
         const buildUrl = () => `http://${this.streamHost}:${this.streamPort}/stream/${this.name}?t=${Date.now()}`;
 
         if (!img) {
-            console.log(`[${this.name}] Initializing stream view...`);
+            console.log(`[${this.name}] Connecting to Hub MJPEG stream...`);
             img = document.createElement('img');
             img.id = `view-${this.name}`;
             img.style.width = "100%";
-            img.className = "camera-stream";
+            img.className = "camera-stream img-fluid rounded";
             
             img.onerror = () => {
-                // MQTTがあればリトライは最小限で済むはずだが、保険として残す
-                if (this.retryCount < 5) {
+                if (this.retryCount < 10) {
                     this.retryCount++;
-                    console.warn(`[${this.name}] Stream connection failed. (Attempt ${this.retryCount})`);
+                    const delay = Math.min(this.retryCount * 1000, 5000);
+                    console.warn(`[${this.name}] Stream connecting... retry ${this.retryCount}`);
                     setTimeout(() => {
                         const currentImg = document.getElementById(`view-${this.name}`);
                         if (currentImg) currentImg.src = buildUrl();
-                    }, 2000);
+                    }, delay);
                 }
             };
 
             img.src = buildUrl();
-            container.prepend(img);
-            document.getElementById(`disp-${this.name}`).style.fontSize = "0.7rem";
+            container.innerHTML = ''; // 既存のプレースホルダーを消去
+            container.appendChild(img);
         }
     }
 
@@ -112,72 +132,73 @@ class CameraUnit {
         if (img) {
             img.src = ""; 
             img.remove();
-            console.log(`[${this.name}] Stream view removed.`);
         }
         this.retryCount = 0;
         this.isWaitingReady = false;
-        const disp = document.getElementById(`disp-${this.name}`);
-        if (disp) disp.style.fontSize = "1.1rem";
     }
 
-    async sendCmd(nodeId, role, action, event) {
+    /**
+     * UI上のステータス表示を一時的に更新する
+     */
+    updateUIStatus(text, color) {
+        const disp = document.getElementById(`disp-${this.name}`);
+        if (disp) {
+            disp.innerText = text;
+            if (color) disp.style.color = color;
+        }
+    }
+
+    /**
+     * PHP経由でNodeへコマンドを送信
+     */
+    async sendCmd(action, event) {
         const btn = event.target;
         const originalText = btn.innerText;
-        const originalBg = btn.style.backgroundColor;
-
         btn.disabled = true;
-        btn.innerText = "SENDING...";
+        btn.innerText = "WAIT...";
 
         try {
             const formData = new URLSearchParams();
-            formData.append('sys_id', nodeId); 
+            formData.append('sys_id', this.manager.nodeId); 
             formData.append('cmd_type', 'vst_control');
             formData.append('cmd_json', JSON.stringify({ 
-                "role": role, 
-                "action": action, 
+                "role": this.name, 
                 "act_run": (action === 'start') 
             }));
 
-            const res = await fetch('send_cmd.php', { method: 'POST', body: formData });
+            const res = await fetch('api/send_cmd.php', { method: 'POST', body: formData });
             const data = await res.json();
             
+            if (!data.command_id) throw new Error("No command ID returned");
+
+            // コマンドが受理されたかDBを追跡
             const track = async () => {
-                const check = await fetch(`get_command_status.php?id=${data.command_id}`);
+                const check = await fetch(`api/get_command_status.php?id=${data.command_id}`);
                 const status = await check.json();
                 
                 if (status.val_status === 'success') {
-                    btn.innerText = "SUCCESS";
-                    btn.style.backgroundColor = "#28a745";
-                    
+                    btn.innerText = "OK";
                     if (action === 'start') {
-                        // 💡 Nodeが受理した。ここからWES(Readyイベント)を待つモードに入る
                         this.isWaitingReady = true; 
-                        console.log(`[${this.name}] Command accepted. Waiting for WES 'stream_ready'...`);
-                    } else {
-                        this.removeStream();
+                        this.updateUIStatus("CONNECTING...", "#ffc107");
                     }
-
-                    setTimeout(() => this.constructor.resetBtn(btn, originalText, originalBg), 2000);
+                    setTimeout(() => { btn.disabled = false; btn.innerText = originalText; }, 1000);
                 } else if (status.val_status === 'error') {
-                    btn.innerText = "FAILED";
-                    btn.style.backgroundColor = "#dc3545";
-                    setTimeout(() => this.constructor.resetBtn(btn, originalText, originalBg), 3000);
+                    btn.innerText = "ERR";
+                    this.updateUIStatus("CMD FAILED", "#dc3545");
+                    setTimeout(() => { btn.disabled = false; btn.innerText = originalText; }, 2000);
                 } else {
-                    setTimeout(track, 800);
+                    setTimeout(track, 500); // 処理中なら継続
                 }
             };
             track();
         } catch (e) { 
-            this.constructor.resetBtn(btn, "ERROR", "#dc3545");
+            console.error("Command send failed:", e);
+            btn.innerText = "ERR";
+            btn.disabled = false;
         }
-    }
-
-    static resetBtn(btn, text, bg) {
-        btn.disabled = false;
-        btn.innerText = text;
-        btn.style.backgroundColor = bg;
     }
 }
 
-// Window登録
+// グローバルに登録
 window.CameraUnit = CameraUnit;

@@ -9,17 +9,17 @@
 <body>
     <header>
         <h1>WILDLINK RACK-CONSOLE <small>Ver 2026.1</small></h1>
-        <div id="system-vital-bar" class="vst-plugin vital-unit">
-            <div class="vital-item">CPU: <span id="vital-cpu">--</span>°C</div>
-            <div class="vital-item">RSSI: <span id="vital-rssi">--</span>dBm</div>
-            <div class="vital-item">UP: <span id="vital-up">--</span>s</div>
-            <div class="vital-item">TIME: <span id="vital-time">--:--:--</span></div>
+        <div id="system-vital-bar" class="vital-unit">
+            <div class="vital-item">CPU: <span id="vital-cpu">--</span></div>
+            <div class="vital-item">RSSI: <span id="vital-rssi">--</span></div>
+            <div class="vital-item">UP: <span id="vital-up">--</span></div>
         </div>
     </header>
 
-    <main id="vst-rack"></main>
+    <main id="vst-rack">
+        </main>
     
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
     <script src="js/vst-manager.js"></script>
 
     <script>
@@ -27,15 +27,15 @@
         const sys_ID = urlParams.get('sys_id');
 
         if (!sys_ID) {
-            alert("ERROR: Node ID is not specified.");
+            document.body.innerHTML = "<h2 style='color:red; text-align:center;'>ERROR: sys_id is missing.</h2>";
+        } else {
+            window.addEventListener('DOMContentLoaded', async () => {
+                // マネージャーの初期化
+                window.vstManagerInstance = new VstManager(sys_ID);
+                // プラグインの読み込みとMQTTの開始
+                await window.vstManagerInstance.init();
+            });
         }
-
-        window.addEventListener('DOMContentLoaded', async () => {
-            // マネージャーのインスタンス化
-            window.vstManagerInstance = new VstManager(sys_ID);
-            // 💡 initを待機することで、動的ロード完了後に処理が進むようにする
-            await window.vstManagerInstance.init();
-        });
     </script>
 </body>
 </html>

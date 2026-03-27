@@ -1,0 +1,50 @@
+|--common
+| |--db_bridge.py
+| |--logger_config.py
+| |--mqtt_client.py
+| |--vst_base.py
+| |--wmp_core.py
+|--hub
+| |--hub_manager.py
+| |--status_engine.py
+| |--wmp_stream_rx.py
+|--node
+| |--main_manager.py
+| |--vst_camera.py
+| |--vst_sensor.py
+| |--vst_switch.py
+|--web
+| |--api_logs.php
+| |--api_status_cards.php
+| |--camviewer.html
+| |--css
+| | |--vst-rack.css
+| |--get_command_status.php
+| |--get_node_config.php
+| |--get_node_status.php
+| |--index.php
+| |--js
+| | |--plugins
+| | | |--camera-unit.js
+| | | |--sensor-unit.js
+| | | |--switch-unit.js
+| | |--vst-manager.js
+| |--send_cmd.php
+| |--sys_monitor.php
+| |--wildlink_core.php
+
+
+
+|--node
+| |--main_manager.py
+| |--vst_bmp280.py
+| |--vst_camera.py
+| |--vst_cpu.py
+| |--vst_dht22.py
+| |--vst_ina219.py
+| |--vst_rtc.py
+| |--vst_sensor.py
+| |--vst_sw_monitor.py
+| |--vst_switch.py
+| |--vst_sys_monitor.py
+

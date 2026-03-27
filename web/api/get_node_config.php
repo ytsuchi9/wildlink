@@ -1,6 +1,6 @@
 <?php
-// /var/www/html/web/get_node_config.php
-require_once 'wildlink_core.php';
+// /var/www/html/web/api/get_node_config.php
+require_once '../wildlink_core.php';
 header('Content-Type: application/json');
 
 /**
