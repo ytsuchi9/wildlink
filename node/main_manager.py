@@ -75,7 +75,7 @@ class MainManager:
             logger.warning(f"⚠️ Received command for unknown role: {role}")
 
     def load_and_init_units(self):
-        """DBから設定を読み込み、役割名(vst_role_name)をキーとしてユニットを生成する"""
+        """DBから設定を読み込み、役割名をキーとしてユニットを生成する (修正版)"""
         new_configs = self.db.fetch_node_config(self.sys_id)
         new_links = self.db.fetch_vst_links(self.sys_id)
         
@@ -122,18 +122,25 @@ class MainManager:
             role_name = cfg.get('vst_role_name') or vst_type 
             cls_name = cfg['vst_class']
             mod_name = cfg.get('vst_module', f"vst_{cls_name.lower()}")
+            
+            # --- 💡 修正ポイント: 文字列ならデコードする ---
             params = cfg.get('val_params', {})
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                except:
+                    params = {}
 
             try:
                 # 動的インポート
                 module = __import__(f"node.{mod_name}", fromlist=[f"VST_{cls_name}"])
                 vst_class = getattr(module, f"VST_{cls_name}")
                 
-                # 💡 WES 2026: sys_id, role_name を明確に渡して初期化
+                # ユニット初期化
                 self.units[role_name] = vst_class(
                     self.sys_id, 
                     role_name, 
-                    params, 
+                    params,  # ここが辞書型になっている必要がある
                     self.mqtt, 
                     self.on_event
                 )
