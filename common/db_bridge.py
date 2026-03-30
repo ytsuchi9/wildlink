@@ -45,7 +45,6 @@ class DBBridge:
             conn = self._get_connection()
             cursor = conn.cursor(buffered=True)
             cursor.execute(sql, params or ())
-            # autocommit=Trueだが明示的にcommit（DDL等への配慮）
             if not sql.strip().upper().startswith("SELECT"):
                 conn.commit()
             cursor.close()
@@ -55,10 +54,10 @@ class DBBridge:
             return False
 
     def fetch_one(self, sql, params=None):
-        """1件取得用"""
+        """1件取得用 (辞書形式で返却)"""
         try:
             conn = self._get_connection()
-            cursor = conn.cursor(buffered=True)
+            cursor = conn.cursor(dictionary=True, buffered=True)
             cursor.execute(sql, params or ())
             result = cursor.fetchone()
             cursor.close()
@@ -67,27 +66,19 @@ class DBBridge:
             print(f"[DBBridge] FetchOne Error: {e}")
             return None
 
-    # =========================================================
-    # ログ・イベント管理機能 (WES 2026)
-    # =========================================================
-    
     def insert_system_log(self, sys_id, log_type, level, msg, code=0, ext=None):
-        """system_logsテーブルへシステムエラー等の基本ログを保存"""
         sql = """
             INSERT INTO system_logs (sys_id, log_type, log_level, log_msg, log_code, log_ext)
             VALUES (%s, %s, %s, %s, %s, %s)
         """
-        return self._execute(sql, (sys_id, log_type, level, msg, code, ext))
+        ext_json = json.dumps(ext, ensure_ascii=False) if ext else None
+        return self._execute(sql, (sys_id, log_type, level, msg, code, ext_json))
 
     def insert_event_log(self, sys_id, vst_role_name, payload):
-        """
-        【WES 2026 追加】動体検知などのイベント(event)をログとして保存。
-        HTTP/POSIXハイブリッドエラーコード設計に基づき、log_codeを連携させます。
-        """
-        log_code = payload.get('log_code', 200) # デフォルトは正常(200)
+        log_code = payload.get('log_code', 200)
         log_msg = payload.get('log_msg', f"Event from {vst_role_name}")
         level = payload.get('log_level', 'info')
-        ext_json = json.dumps(payload)
+        ext_json = json.dumps(payload, ensure_ascii=False)
         
         sql = """
             INSERT INTO system_logs (sys_id, log_type, log_level, log_msg, log_code, log_ext)
@@ -95,57 +86,25 @@ class DBBridge:
         """
         return self._execute(sql, (sys_id, level, log_msg, log_code, ext_json))
 
-    def get_log_level(self, sys_id):
-        """nodesテーブルから設定されたログレベルを取得"""
-        sql = "SELECT val_log_level FROM nodes WHERE sys_id = %s AND is_active = 1"
-        row = self.fetch_one(sql, (sys_id,))
-        return row[0] if row else "info"
-
-
-    # =========================================================
-    # ステータス・ハートビート管理 (WES 2026 Role-Based)
-    # =========================================================
-    
     def update_node_heartbeat(self, sys_id, status="online"):
-        """生存報告。updated_at を現在時刻に更新"""
         query = "UPDATE nodes SET sys_status = %s, updated_at = NOW() WHERE sys_id = %s AND is_active = 1"
         return self._execute(query, (status, sys_id))
 
     def update_node_status(self, sys_id, vst_role_name, payload):
+        val_status = payload.get('val_status', 'unknown')
+        params_json = json.dumps(payload, ensure_ascii=False)
+        
+        query = """
+            INSERT INTO node_status_current (sys_id, vst_role_name, val_status, val_params, updated_at)
+            VALUES (%s, %s, %s, %s, NOW())
+            ON DUPLICATE KEY UPDATE 
+                val_status = VALUES(val_status),
+                val_params = VALUES(val_params),
+                updated_at = NOW()
         """
-        【WES 2026 修正】hub_managerのon_messageから呼ばれる中核処理。
-        旧 update_vst_status と統合し、JSONパッチ(payload)を丸ごとval_paramsへ格納。
-        """
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            
-            val_status = payload.get('val_status', 'unknown')
-            params_json = json.dumps(payload)
-            
-            # 役割名(vst_role_name)をキーにして更新
-            query = """
-                INSERT INTO node_status_current (sys_id, vst_role_name, val_status, val_params, updated_at)
-                VALUES (%s, %s, %s, %s, NOW())
-                ON DUPLICATE KEY UPDATE 
-                    val_status = VALUES(val_status),
-                    val_params = VALUES(val_params),
-                    updated_at = NOW()
-            """
-            cursor.execute(query, (sys_id, vst_role_name, val_status, params_json))
-            cursor.close()
-            return True
-        except Exception as e:
-            print(f"[DBBridge] update_node_status Error: {e}")
-            return False
+        return self._execute(query, (sys_id, vst_role_name, val_status, params_json))
 
-
-    # =========================================================
-    # 構成情報・連携設定の取得/保存
-    # =========================================================
-    
     def fetch_node_config(self, sys_id):
-        """指定された sys_id の有効(is_active=1)なプラグイン構成を全取得"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True)
@@ -172,32 +131,7 @@ class DBBridge:
             print(f"[DBBridge] fetch_node_config Error: {e}")
             return None
 
-    def save_node_config(self, sys_id, vst_role_name, vst_type, val_params):
-        """履歴保持型で設定を保存 (旧設定をis_active=0にする)"""
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            
-            # 1. 旧設定を無効化
-            deactivate_sql = "UPDATE node_configs SET is_active = 0 WHERE sys_id = %s AND vst_role_name = %s"
-            cursor.execute(deactivate_sql, (sys_id, vst_role_name))
-            
-            # 2. 新設定を挿入
-            params_json = json.dumps(val_params) if isinstance(val_params, (dict, list)) else val_params
-            insert_sql = """
-                INSERT INTO node_configs (sys_id, vst_role_name, vst_type, val_params, is_active, created_at)
-                VALUES (%s, %s, %s, %s, 1, NOW(3))
-            """
-            cursor.execute(insert_sql, (sys_id, vst_role_name, vst_type, params_json))
-            
-            cursor.close()
-            return True
-        except Exception as e:
-            print(f"[DBBridge] save_node_config Error: {e}")
-            return False
-
     def fetch_vst_links(self, sys_id):
-        """連動設定を取得"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True)
@@ -220,30 +154,7 @@ class DBBridge:
             print(f"[DBBridge] fetch_vst_links Error: {e}")
             return []
 
-    def insert_node_data(self, sys_id, vst_role_name, data_dict, raw_json=None):
-        """node_data テーブルへセンサー値を保存 (ハイブリッド型)"""
-        sql = """
-            INSERT INTO node_data (sys_id, vst_role_name, env_temp, env_hum, env_pres, env_lux, raw_data, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-        """
-        params = (
-            sys_id,
-            vst_role_name,
-            data_dict.get('temp'),
-            data_dict.get('hum'),
-            data_dict.get('pres'),
-            data_dict.get('lux'),
-            raw_json or json.dumps(data_dict)
-        )
-        return self._execute(sql, params)
-
-
-    # =========================================================
-    # コマンド履歴管理 (WES 2026)
-    # =========================================================
-    
     def fetch_pending_commands(self, sys_id=None):
-        """実行待ちコマンドを古い順(作成順)に取得"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True)
@@ -253,7 +164,6 @@ class DBBridge:
                 query += " AND sys_id = %s"
                 params.append(sys_id)
             query += " ORDER BY created_at ASC" 
-            
             cursor.execute(query, params)
             result = cursor.fetchall()
             cursor.close()
@@ -263,19 +173,38 @@ class DBBridge:
             return []
 
     def update_command_status(self, cmd_id, status):
-        """
-        【WES 2026 修正】コマンドの状態遷移とタイムスタンプを正確に記録。
-        旧 update_node_status に混在していたコマンド更新ロジックをここに統合。
-        """
+        if not cmd_id or cmd_id == 0: return False
+        if status == "acked": status = "acknowledged"
+        
         column_update = ""
-        # 進行状態に応じたタイムスタンプの記録
         if status == "sent": 
             column_update = ", sent_at = NOW(3)"
-        elif status == "acked": 
+        elif status == "acknowledged": 
             column_update = ", acked_at = NOW(3)"
-        elif status in ["completed", "success", "error"]: 
-            # 完了系ステータスの場合は completed_at を記録
-            column_update = ", completed_at = NOW(3)"
             
         query = f"UPDATE node_commands SET val_status = %s {column_update} WHERE id = %s"
         return self._execute(query, (status, cmd_id))
+
+    def mark_command_acknowledged(self, cmd_id):
+        """
+        WES 2026: 修正
+        execute_query を _execute に修正
+        """
+        sql = "UPDATE node_commands SET acked_at = NOW(3), val_status = 'acknowledged' WHERE id = %s AND acked_at IS NULL"
+        return self._execute(sql, (cmd_id,))
+
+    def finalize_command(self, cmd_id, status, log_msg='', log_code=200, res_payload=None):
+        if not cmd_id or cmd_id == 0: return False
+        final_status = "success" if status in ["success", "streaming", "idle", "active"] else "error"
+        
+        res_json = json.dumps(res_payload, ensure_ascii=False) if res_payload else None
+        sql = """
+            UPDATE node_commands 
+            SET val_status = %s, 
+                log_msg = %s, 
+                log_code = %s, 
+                val_res_payload = %s,
+                completed_at = NOW(3) 
+            WHERE id = %s
+        """
+        return self._execute(sql, (final_status, log_msg, log_code, res_json, cmd_id))
