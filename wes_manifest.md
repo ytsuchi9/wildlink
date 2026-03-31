@@ -22,7 +22,7 @@
     * Pythonクラス名: VST_Camera, VST_System, VST_Sensor （VST_ + DBの vst_class）
         MainManager 内の以下のロジックはこの規格に則っている
             full_class_name = class_name if class_name.startswith("VST_") else f"VST_{class_name}"
-            
+
 ---
 
 ### 1. [UI/API] `api/send_cmd.php`
@@ -78,3 +78,24 @@
 3.  **`hub_manager.py`**: `res` トピックをパースする際、`vst_type` ではなく `vst_role_name` カラムを更新するように確認する。
 
 ---
+
+## 6. コマンド応答プロトコル (Response Architecture)
+
+WES 2026 では、コマンドの実行結果とデバイスの状態を独立して管理する。
+
+### 6.1 応答ペイロード構造
+すべての応答 (`/res` トピック) は以下のキーを含まなければならない。
+
+- `cmd_status` (string): 命令のライフサイクル状態。
+  - `acknowledged`: 受領完了（NodeのManagerが送信）。
+  - `completed`: 正常終了（VSTユニットが送信）。
+  - `failed`: 異常終了（VSTユニットが送信）。
+- `val_status` (string): デバイスの現在の物理動作状態。
+  - `idle`, `streaming`, `starting`, `error`, `maintenance` など。
+- `ref_cmd_id` (int): 関連するコマンドID。
+
+### 6.2 処理フロー
+1. **Hub -> Node**: コマンド送信。
+2. **MainManager**: `cmd_status: acknowledged` を返信し、DBの `acked_at` を更新。
+3. **VST Unit**: 処理開始。完了または失敗時に `cmd_status: completed/failed` と最新の `val_status` を返信。
+4. **HubManager**: `cmd_status` を見て `completed_at` を更新し、同時に `val_status` を見て `node_status_current` を更新する。

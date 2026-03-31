@@ -3,19 +3,19 @@ import sys
 import subprocess
 import psutil
 import time
-from node.vst_base import VSTBase
+from common.vst_base import WildLinkVSTBase
 from common.logger_config import get_logger
 
 logger = get_logger("vst_system")
 
-class VST_System(VSTBase):
+class VST_System(WildLinkVSTBase):
     """
     WildLink Event Standard (WES) 2026 準拠
     システム管理 VST ユニット。
     OSレベルの操作（再起動など）や、システムリソースの監視を担当する。
     """
-    def __init__(self, sys_id, role_name, params, mqtt_client, event_callback):
-        super().__init__(sys_id, role_name, params, mqtt_client, event_callback)
+    def __init__(self, sys_id, role, params, mqtt_client=None, event_callback=None):
+        super().__init__(sys_id, role, params, mqtt_client, event_callback)
         
         # システムメトリクスの収集間隔（秒）
         self.val_interval = params.get("val_interval", 60)

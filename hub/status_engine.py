@@ -21,65 +21,54 @@ def on_message(client, userdata, msg):
     db = DBBridge() 
     
     try:
-        # トピック構成: vst/{sys_id}/{msg_type}
         topic_parts = msg.topic.split('/')
-        if len(topic_parts) < 3:
-            return
+        if len(topic_parts) < 3: return
             
-        # トピックから情報を抽出
         topic_sys_id = topic_parts[1]
         msg_type = topic_parts[2]
         
-        payload = {}
-        try:
-            payload = json.loads(msg.payload.decode())
-        except json.JSONDecodeError:
-            logger.error(f"⚠️ Invalid JSON received on {msg.topic}")
-            return
-        
-        # ペイロード内に sys_id があれば優先、なければトピックから採用
+        payload = json.loads(msg.payload.decode())
         sys_id = payload.get("sys_id") or topic_sys_id
 
         # --- A. ノードからのレスポンス (res) 処理 ---
         if msg_type == "res":
-            cmd_id = payload.get("cmd_id")
-            val_status = payload.get("val_status")
-            if not cmd_id:
-                return
+            # WES 2026 準拠: ref_cmd_id または cmd_id を取得
+            cmd_id = payload.get("ref_cmd_id") or payload.get("cmd_id")
+            cmd_status = payload.get("cmd_status") or payload.get("val_status") # フォールバック
             
-            # 1. コマンド履歴(node_commands)を更新
-            # ※ node_commands は履歴なので直接UPDATEでOK（設計維持）
-            sql_cmd = """
-                UPDATE node_commands 
-                SET val_status = %s, log_code = %s, log_msg = %s, val_res_payload = %s, completed_at = NOW(3) 
-                WHERE id = %s
-            """
-            db._execute(sql_cmd, (
-                val_status, 
-                payload.get("log_code"), 
-                payload.get("log_msg"), 
-                json.dumps(payload), 
-                cmd_id
-            ))
+            if not cmd_id: return
 
-            # 2. 実行成功時のみ、現在のステータスを同期
-            if val_status == "success":
-                # コマンド内容を再確認してステータス反映
-                row = db.fetch_one("SELECT cmd_json FROM node_commands WHERE id = %s", (cmd_id,))
-                if row:
-                    cmd_info = json.loads(row[0])
-                    # 2026年版：vst_type ではなく role (役割名) を優先的に探す
-                    role_name = cmd_info.get("role") or cmd_info.get("target") or cmd_info.get("vst_type")
-                    action = cmd_info.get("action")
-                    
-                    if role_name:
-                        # start命令なら streaming、それ以外（stop等）なら idle
-                        new_status = 'streaming' if action == 'start' else 'idle'
-                        # DBBridgeの新しい role 対応メソッドを使用
-                        db.update_vst_status(sys_id, role_name, new_status)
-                        logger.info(f"[{sys_id}] ⚡ Status synced: {role_name} -> {new_status}")
+            # 1. 受領通知 (acknowledged) の場合
+            if cmd_status == "acknowledged":
+                sql_ack = "UPDATE node_commands SET acked_at = NOW(3) WHERE id = %s AND acked_at IS NULL"
+                db._execute(sql_ack, (cmd_id,))
+                logger.info(f"🕒 [ACK] Command {cmd_id} acknowledged by {sys_id}")
 
-            logger.debug(f"[{sys_id}] ✅ Command {cmd_id} updated to {val_status}")
+            # 2. 完了 (completed) または 失敗 (failed/error) の場合
+            elif cmd_status in ["completed", "failed", "error", "success"]:
+                # 完了時刻と最終ステータスを書き込む
+                sql_final = """
+                    UPDATE node_commands 
+                    SET val_status = %s, log_code = %s, log_msg = %s, 
+                        val_res_payload = %s, completed_at = NOW(3) 
+                    WHERE id = %s
+                """
+                # val_status には物理状態 (streaming等) を入れる
+                final_val_status = payload.get("val_status") or ("error" if cmd_status == "failed" else "idle")
+                
+                db._execute(sql_final, (
+                    final_val_status, 
+                    payload.get("log_code", 200), 
+                    payload.get("log_msg", ""), 
+                    json.dumps(payload), 
+                    cmd_id
+                ))
+
+                # 現在のステータス(node_status_current)も同期
+                role_name = payload.get("role") or payload.get("vst_role_name")
+                if role_name:
+                    db.update_vst_status(sys_id, role_name, final_val_status)
+                    logger.info(f"✅ [Final] Command {cmd_id} {cmd_status}. Status: {role_name}->{final_val_status}")
 
         # --- B. ノードからのレポート (report) 処理 ---
         elif msg_type == "report":

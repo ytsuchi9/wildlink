@@ -149,13 +149,41 @@ class WildLinkVSTBase:
         else:
             logger.debug(f"[{self.role}] No active command ID to finalize.")
 
-    def notify_manager(self, event_type="status_changed"):
+    def send_response(self, cmd_status=None, log_msg=None):
         """
-        MainManagerに内部通知を送り、連動アクションをトリガーさせる。
+        [WES 2026] Hub に対して応答を送る。
+        - cmd_status: "completed", "acknowledged", "failed" などの命令に対する結果
+        - log_msg: 補足メッセージ
+        """
+        if log_msg:
+            self.log_msg = log_msg
+            
+        # 1. ペイロードの作成
+        # self.val_status (idle/streaming等) と cmd_status (completed等) を分けて送る
+        payload = {
+            "val_status": self.val_status,  # 現在のデバイスの物理状態
+            "cmd_status": cmd_status,      # 今回のコマンドがどうなったか
+            "ref_cmd_id": getattr(self, "ref_cmd_id", None),
+            "log_msg": self.log_msg,
+            "log_code": self.log_code
+        }
+        
+        # 2. Manager を通じて送信 (nodes/{sys_id}/{role}/res)
+        self.notify_manager("result", payload)
+        
+        # 3. ローカルDBも更新（cmd_statusがある場合のみ）
+        if cmd_status:
+            self.finalize_command(status=cmd_status, msg=self.log_msg)
+
+    def notify_manager(self, event_type="status_changed", payload=None):
+        """
+        MainManagerに内部通知を送る。引数に payload を追加できるように修正。
         """
         if self.event_callback:
-            # 引数形式の互換性 (role, event_type) 
-            self.event_callback(self.role, event_type)
+            # MainManager.on_vst_event(source_role, event_type, payload) に対応
+            if payload is None:
+                payload = self.report()
+            self.event_callback(self.role, event_type, payload)
 
     def poll(self):
         """周期実行処理用スロット"""

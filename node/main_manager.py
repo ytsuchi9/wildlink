@@ -171,9 +171,13 @@ class MainManager:
 
     def load_and_init_units(self):
         """設定読み込みとユニット初期化"""
-        new_configs = self.db.fetch_node_config(self.sys_id)
-        new_links = self.db.fetch_vst_links(self.sys_id)
-        
+        try:
+            new_configs = self.db.fetch_node_config(self.sys_id)
+            new_links = self.db.fetch_vst_links(self.sys_id)
+        except Exception as e:
+            logger.error(f"DB access failed: {e}")
+            new_configs = None
+
         if new_configs is None:
             if os.path.exists(self.config_cache_path):
                 logger.warning("⚠️ [Manager] DB offline. Loading from cache...")

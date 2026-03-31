@@ -3,7 +3,8 @@ import time
 
 class VST_Switch:
     # 💡 config引数を受け取れるように拡張
-    def __init__(self, role, params, mqtt, on_event, config=None):
+    def __init__(self, sys_id, role, params, mqtt_client=None, event_callback=None):
+        super().__init__(sys_id, role, params, mqtt_client, event_callback)
         self.role = role
         self.params = params
         self.mqtt = mqtt

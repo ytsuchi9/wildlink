@@ -1,9 +1,14 @@
 import RPi.GPIO as GPIO
 import time
 from datetime import datetime
+from common.vst_base import WildLinkVSTBase
 
-class VST_Sensor:
-    def __init__(self, role, params, mqtt, on_event, config=None):
+class VST_Sensor(WildLinkVSTBase):
+    def __init__(self, **kwargs):
+        # 親クラスの初期化にすべての引数を渡す必要があります
+        super().__init__(**kwargs)
+    #def __init__(self, sys_id, role, params, mqtt_client=None, event_callback=None):
+    #    super().__init__(sys_id, role, params, mqtt_client, event_callback)
         self.role = role
         self.params = params
         self.mqtt = mqtt
