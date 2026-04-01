@@ -114,6 +114,7 @@ class WildLinkHubManager:
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             logger.info("🌐 Hub Manager Connected Successfully.")
+            # WES 2026: トピックの購読
             client.subscribe("nodes/+/+/res")
             client.subscribe("nodes/+/+/event")
             hub_id = os.getenv("SYS_ID", "hub_001")
@@ -123,7 +124,7 @@ class WildLinkHubManager:
 
     def on_message(self, client, userdata, msg):
         """
-        WES 2026: 受信メッセージ解析
+        [WES 2026] 受信メッセージ解析
         """
         try:
             parts = msg.topic.split('/')
@@ -136,7 +137,6 @@ class WildLinkHubManager:
             if role == "None" or sys_id == "None":
                 return
 
-            # ペイロードのデコード
             raw_payload = msg.payload.decode()
             try:
                 payload = json.loads(raw_payload)
@@ -149,51 +149,55 @@ class WildLinkHubManager:
             if not isinstance(payload, dict):
                 return
 
-            status = payload.get('val_status', 'unknown')
-            logger.info(f"📥 [{msg_type}] from [{sys_id}:{role}] status:{status}")
-
-           # 1. 現在の状態（node_status_current）の更新
-            # val_status (streaming, idle 等) が含まれていれば更新
-            if msg_type == 'res':
-                # もし val_status が 'completed' のような一時的な単語なら
-                # status_current には書き込まないように安全策をとる
-                if payload.get('val_status') not in ['completed', 'acknowledged']:
-                    self.db.update_node_status(sys_id, role, payload)
-            
-            # 2. コマンド履歴(node_commands)のライフサイクル管理
+            # WES 2026: 各ステータスの抽出
+            val_status = payload.get('val_status')
+            cmd_status = payload.get('cmd_status')
             ref_id = payload.get('ref_cmd_id') or payload.get('cmd_id')
-            cmd_status = payload.get('cmd_status') # Base側で追加したキー
 
-            if ref_id and cmd_status:
-                # [WES 2026] 受領報告
-                if cmd_status == "acknowledged":
-                    logger.info(f"🕒 Marking Command [ID:{ref_id}] as Acknowledged")
-                    self.db.mark_command_acknowledged(ref_id)
-                
-                # [WES 2026] 完了報告
-                elif cmd_status == "completed":
-                    logger.info(f"🏁 Finalizing Command [ID:{ref_id}] as Completed")
-                    self.db.finalize_command(
-                        cmd_id=ref_id,
-                        status="completed",
-                        log_msg=payload.get('log_msg', 'Logic execution completed'),
-                        log_code=payload.get('log_code', 200),
-                        res_payload=payload
-                    )
-                
-                # [WES 2026] 失敗報告
-                elif cmd_status == "failed":
-                    logger.error(f"❌ Command [ID:{ref_id}] Failed")
-                    self.db.finalize_command(
-                        cmd_id=ref_id,
-                        status="failed",
-                        log_msg=payload.get('log_msg', 'Execution error'),
-                        log_code=payload.get('log_code', 500),
-                        res_payload=payload
-                    )
+            # -------------------------------------------------------------
+            # A. レスポンス (res) トピックの処理
+            # -------------------------------------------------------------
+            if msg_type == 'res':
+                logger.info(f"📥 [res] from [{sys_id}:{role}] cmd_status:{cmd_status}, val_status:{val_status}")
 
-            # 3. イベントログ保存
-            if msg_type == 'event':
+                # 1. 物理状態 (node_status_current) の同期
+                # 確実に物理状態を示す文字列の場合のみDBを更新する
+                valid_physical_states = ['idle', 'streaming', 'starting', 'error', 'maintenance']
+                if val_status in valid_physical_states:
+                    self.db.update_node_status(sys_id, role, payload)
+
+                # 2. コマンド履歴 (node_commands) のライフサイクル管理
+                if ref_id and cmd_status:
+                    if cmd_status == "acknowledged":
+                        logger.info(f"🕒 Marking Command [ID:{ref_id}] as Acknowledged")
+                        self.db.mark_command_acknowledged(ref_id)
+                    
+                    elif cmd_status == "completed":
+                        logger.info(f"🏁 Finalizing Command [ID:{ref_id}] as Completed")
+                        self.db.finalize_command(
+                            cmd_id=ref_id,
+                            status="success", # node_commands上の実行結果としてsuccessを記録
+                            log_msg=payload.get('log_msg', 'Logic execution completed'),
+                            log_code=payload.get('log_code', 200),
+                            res_payload=payload
+                        )
+                    
+                    elif cmd_status == "failed":
+                        logger.error(f"❌ Command [ID:{ref_id}] Failed")
+                        self.db.finalize_command(
+                            cmd_id=ref_id,
+                            status="error", # node_commands上の実行結果としてerrorを記録
+                            log_msg=payload.get('log_msg', 'Execution error'),
+                            log_code=payload.get('log_code', 500),
+                            res_payload=payload
+                        )
+
+            # -------------------------------------------------------------
+            # B. イベント (event) トピックの処理
+            # -------------------------------------------------------------
+            elif msg_type == 'event':
+                # イベントはコマンドのライフサイクルとは独立してログに記録する
+                logger.info(f"📥 [event] from [{sys_id}:{role}] log_msg:{payload.get('log_msg')}")
                 self.db.insert_event_log(sys_id, role, payload)
 
         except Exception as e:

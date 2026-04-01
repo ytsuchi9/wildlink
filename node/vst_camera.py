@@ -5,6 +5,9 @@ import time
 import fcntl
 import threading
 from common.vst_base import WildLinkVSTBase
+from common.logger_config import get_logger
+
+logger = get_logger("vst_camera.py")
 
 class VST_Camera(WildLinkVSTBase):
     """
@@ -37,24 +40,38 @@ class VST_Camera(WildLinkVSTBase):
         self.thread = None
         self.stop_event = threading.Event()
 
+        logger.info(f"Driver: {self.hw_driver}")
+
     def control(self, payload):
         """
         [WES 2026] 命令を受けて実行し、完了を報告する
         """
         # 1. 実行するコマンドIDを保持
-        self.ref_cmd_id = payload.get("cmd_id")
+        self.ref_cmd_id = payload.get("cmd_id", 0)
         
-        # 2. 親クラスの処理（act_run などの変数更新）を呼ぶ
+        # 2. 親クラスの処理（act_run などの変数更新と Acknowledge 送信を想定）
         super().control(payload)
         
-        # 3. 実際の動作（配信開始/停止）
         target_run = payload.get("act_run", False)
+
+        # 3. 実際の動作（配信開始/停止）
         if target_run:
-            self.start_streaming()
-            # ここでは send_response を呼ばず、実際の成功を待つ
+            if self.act_run and self.thread and self.thread.is_alive():
+                # 既に配信中の場合は、何もせず「完了」を報告
+                logger.info(f"ℹ️ [{self.role}] Already streaming. Skipping start.")
+                self.send_response("completed", log_msg="Already streaming")
+            else:
+                # 配信開始（完了報告は最初のフレーム送信時に _streaming_loop 内で行う）
+                self.start_streaming()
         else:
-            self.stop_streaming()
-            self.send_response("completed", log_msg="Stream stopped by command")
+            if not self.act_run:
+                # 既に停止している場合は、何もせず「完了」を報告
+                logger.info(f"ℹ️ [{self.role}] Already idle. Skipping stop.")
+                self.send_response("completed", log_msg="Already stopped")
+            else:
+                # 配信停止
+                self.stop_streaming()
+                # stop_streaming の中で send_response("completed") を呼ぶように変更したため、ここでは呼ばない
 
     def start_streaming(self):
         """スレッドを起動してストリーミングを開始する"""
@@ -77,23 +94,32 @@ class VST_Camera(WildLinkVSTBase):
 
     def stop_streaming(self):
         """ストリーミングを停止し、プロセスをクリーンアップする"""
+        logger.info(f"Stopping stream for {self.role}...")
+        
         if not self.stop_event.is_set():
             self.stop_event.set()
             
         if self.process:
-            self.process.terminate()
             try:
-                self.process.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
+                self.process.terminate()
+                self.process.wait(timeout=1.5)
+            except Exception:
+                if self.process:
+                    self.process.kill()
             self.process = None
             
+        # スレッドの終了を待つ（デッドロック防止のためタイムアウト付き）
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=2.0)
+
+        # 状態の更新
         self.val_status = "idle"
-        self.log_msg = "Stream stopped"
         self.act_run = False
+        self.log_msg = "Stream stopped"
         
-        # 停止状態を報告
-        self.send_response("idle")
+        # [WES 2026] 停止完了を報告
+        # 'idle' という独自ステータスではなく、コマンドに対する結果として 'completed' を送る
+        self.send_response("completed", log_msg=self.log_msg)
         self.send_event("streaming_stopped")
 
     def _streaming_loop(self):

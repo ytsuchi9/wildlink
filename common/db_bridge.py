@@ -1,5 +1,3 @@
-# common/db_bridge.py
-
 import mysql.connector
 import os
 import json
@@ -85,6 +83,18 @@ class DBBridge:
             VALUES (%s, 'event', %s, %s, %s, %s)
         """
         return self._execute(sql, (sys_id, level, log_msg, log_code, ext_json))
+
+    def insert_node_data(self, sys_id, role_name, env_data, raw_json):
+        # status_engine 用の環境データ挿入メソッド (実装補完)
+        sql = """
+            INSERT INTO node_data (sys_id, vst_role_name, env_temp, env_hum, env_pres, env_lux, raw_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        return self._execute(sql, (
+            sys_id, role_name,
+            env_data.get('temp'), env_data.get('hum'), env_data.get('pres'), env_data.get('lux'),
+            raw_json
+        ))
 
     def update_node_heartbeat(self, sys_id, status="online"):
         query = "UPDATE nodes SET sys_status = %s, updated_at = NOW() WHERE sys_id = %s AND is_active = 1"
@@ -174,7 +184,6 @@ class DBBridge:
 
     def update_command_status(self, cmd_id, status):
         if not cmd_id or cmd_id == 0: return False
-        if status == "acked": status = "acknowledged"
         
         column_update = ""
         if status == "sent": 
@@ -186,16 +195,15 @@ class DBBridge:
         return self._execute(query, (status, cmd_id))
 
     def mark_command_acknowledged(self, cmd_id):
-        """
-        WES 2026: 修正
-        execute_query を _execute に修正
-        """
+        """ コマンド受領処理 """
         sql = "UPDATE node_commands SET acked_at = NOW(3), val_status = 'acknowledged' WHERE id = %s AND acked_at IS NULL"
         return self._execute(sql, (cmd_id,))
 
     def finalize_command(self, cmd_id, status, log_msg='', log_code=200, res_payload=None):
         if not cmd_id or cmd_id == 0: return False
-        final_status = "success" if status in ["success", "streaming", "idle", "active"] else "error"
+        
+        # WES 2026: hub_manager が明示的に "success" または "error" を渡すようになったため、厳密に処理
+        final_status = status if status in ["success", "error"] else "error"
         
         res_json = json.dumps(res_payload, ensure_ascii=False) if res_payload else None
         sql = """

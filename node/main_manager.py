@@ -18,6 +18,7 @@ try:
 except ImportError:
     GPIO = None
 
+from common.config_loader import SYS_ID  # 統一設定から読み込む
 from common.db_bridge import DBBridge
 from common.mqtt_client import MQTTClient
 from common.logger_config import get_logger
@@ -31,7 +32,7 @@ class MainManager:
     ユニット間連動 (vst_links) を制御する司令塔。
     """
     def __init__(self):
-        self.sys_id = os.getenv("NODE_ID") or os.getenv("SYS_ID") or "node_001"
+        self.sys_id = SYS_ID
         self.db = DBBridge()
         self.mqtt = None
         self.units = {}           # 稼働中の VST ユニット {role_name: instance}
@@ -62,80 +63,72 @@ class MainManager:
 
     def on_mqtt_command(self, role, payload):
         """
-        MQTT 命令受信時の処理。
-        1. Hubへ「受信確認(ACK)」をMQTTで返信（これによりHub側のacked_atが更新される）
-        2. 適切なユニットへ命令を配送する。
+        WES 2026 準拠: MQTT 命令受信および配送処理
         """
         try:
-            # ref_cmd_id または cmd_id を取得
             cmd_id = payload.get("ref_cmd_id") or payload.get("cmd_id", 0)
             
-            # 【重要】Hubに対して「受け取った」ことをMQTTで即座に返信 (WES 2026 規格)
-            # トピック: nodes/{sys_id}/{role}/res
+            # 1. 即座に受信確認 (ACK) を返信
             if cmd_id > 0:
-                ack_payload = {
-                    "ref_cmd_id": cmd_id,
-                    "val_status": "acknowledged",
-                    "log_msg": f"Received by {role}"
-                }
-                res_topic = f"nodes/{self.sys_id}/{role}/res"
-                self.mqtt.publish(res_topic, json.dumps(ack_payload))
-                logger.info(f"📤 [ACK Sent] Topic: {res_topic} for CMD:{cmd_id}")
+                current_unit_status = "acknowledged"
+                if role in self.units:
+                    current_unit_status = getattr(self.units[role], 'val_status', "acknowledged")
 
-            # マネージャー自身への直接命令 (reload 等)
+                self.mqtt.publish_res(
+                    sys_id=self.sys_id,
+                    role=role,
+                    cmd_id=cmd_id,
+                    cmd_status="acknowledged",
+                    val_status=current_unit_status,
+                    log_msg=f"ACK from {self.sys_id}"
+                )
+                logger.info(f"📤 [ACK Sent] CMD:{cmd_id} to {role}")
+
+            # 2. マネージャー自身への直接命令 (reload 等)
             if role in ["manager", "system"]:
                 if payload.get("action") == "reload":
-                    logger.info("🔄 Reload command received")
+                    logger.info("🔄 Reloading configuration...")
                     self.load_and_init_units()
-                    # 完了報告を送信
                     if cmd_id > 0:
-                        res_payload = {
-                            "ref_cmd_id": cmd_id,
-                            "val_status": "success",
-                            "log_msg": "Reload completed"
-                        }
-                        self.mqtt.publish(f"nodes/{self.sys_id}/{role}/res", json.dumps(res_payload))
+                        self.mqtt.publish_res(
+                            self.sys_id, role, cmd_id, 
+                            cmd_status="completed", 
+                            val_status="idle", 
+                            log_msg="Reload completed"
+                        )
                 return
 
-            # 各 VST ユニットへの命令配送
+            # 3. 各 VST ユニットへの命令配送
             if role in self.units:
                 logger.info(f"📩 [Dispatch] to {role}: {payload}")
                 self.units[role].control(payload)
             else:
-                logger.warning(f"⚠️ [Dispatch Failed] Target unit not found: {role}")
+                logger.warning(f"⚠️ [Dispatch Failed] Target not found: {role}")
                 if cmd_id > 0:
-                    err_payload = {
-                        "ref_cmd_id": cmd_id,
-                        "val_status": "error",
-                        "log_code": 404,
-                        "log_msg": f"Unit {role} is not active on this node"
-                    }
-                    self.mqtt.publish(f"nodes/{self.sys_id}/{role}/res", json.dumps(err_payload))
+                    self.mqtt.publish_res(
+                        self.sys_id, role, cmd_id, 
+                        cmd_status="failed", 
+                        val_status="error", 
+                        log_msg=f"Unit {role} not found"
+                    )
                 
         except Exception as e:
             logger.error(f"❌ [MQTT Command] Error: {e}")
 
     def on_vst_event(self, source_role, event_type, payload=None):
-        """
-        ユニットからのイベント受信時の処理。
-        WES 2026: 全てのイベント（および結果報告）はHubに転送する。
-        """
+        """ユニットからのイベント受信時の処理"""
         payload = payload or {}
         cmd_id = payload.get("ref_cmd_id") or payload.get("cmd_id", 0)
 
-        # 1. Hubへイベント/レスポンスを転送
-        # event_type が 'result' なら /res トピック、それ以外なら /event トピック
         msg_type = "res" if event_type == "result" else "event"
         pub_topic = f"nodes/{self.sys_id}/{source_role}/{msg_type}"
         
-        # 必要なメタデータを付与
         payload["event_type"] = event_type
         if cmd_id > 0: payload["ref_cmd_id"] = cmd_id
 
         self.mqtt.publish(pub_topic, json.dumps(payload))
         logger.info(f"🔔 [Event Forwarded] {source_role}:{event_type} -> {pub_topic}")
 
-        # 2. vst_links に基づくノード内連動
         matched_links = [l for l in self.links if l['source_role'] == source_role and l.get('event_type') == event_type]
         for link in matched_links:
             self.execute_link(link)
@@ -170,7 +163,7 @@ class MainManager:
             del self.active_timers[role]
 
     def load_and_init_units(self):
-        """設定読み込みとユニット初期化"""
+        """設定読み込みとユニットの『差分更新』管理"""
         try:
             new_configs = self.db.fetch_node_config(self.sys_id)
             new_links = self.db.fetch_vst_links(self.sys_id)
@@ -189,65 +182,98 @@ class MainManager:
                 logger.error("❌ No configuration available.")
                 return
 
-        current_data = {"configs": new_configs, "links": new_links}
-        new_config_raw = json.dumps(current_data, sort_keys=True, default=str)
-        if new_config_raw == self.current_config_raw:
-            return
+        # 💡 変動する値(updated_at等)を除外して比較
+        comparable_configs = []
+        for c in new_configs:
+            comparable_configs.append({
+                "role": c['vst_role_name'],
+                "params": c['val_params'],
+                "driver": c['hw_driver']
+            })
 
-        logger.info("🔄 [Manager] Configuration change detected.")
+        current_data = {"configs": comparable_configs, "links": new_links}
+        new_config_raw = json.dumps(current_data, sort_keys=True, default=str)
+        
+        if new_config_raw == self.current_config_raw:
+            return 
+
+        logger.info("🔄 [Manager] Configuration change detected. Updating units...")
         self.current_config_raw = new_config_raw
         self.links = new_links
         
         try:
             with open(self.config_cache_path, 'w') as f:
-                json.dump(current_data, f)
+                json.dump({"configs": new_configs, "links": new_links}, f)
         except Exception as e: logger.error(f"Cache error: {e}")
+
+        new_role_names = [cfg['vst_role_name'] for cfg in new_configs]
+        for role in list(self.units.keys()):
+            if role not in new_role_names:
+                logger.info(f"🗑️ Stopping removed unit: {role}")
+                try:
+                    self.units[role].stop()
+                    del self.units[role]
+                except: pass
 
         for t in self.active_timers.values(): t.cancel()
         self.active_timers.clear()
-        for unit in list(self.units.values()):
-            try: unit.stop()
-            except: pass
-        self.units.clear()
-
-        if GPIO:
-            try:
-                GPIO.setwarnings(False)
-                GPIO.cleanup()
-                GPIO.setmode(GPIO.BCM)
-            except: pass
 
         for cfg in new_configs:
-            role = cfg['vst_role_name']
-            module_name = cfg.get('vst_module') or f"vst_{cfg['vst_class'].lower()}"
-            class_name = cfg['vst_class']
-            full_class_name = class_name if class_name.startswith("VST_") else f"VST_{class_name}"
-            
-            params = cfg.get('val_params', {})
-            if isinstance(params, str):
-                try: params = json.loads(params)
-                except: params = {}
+            self._activate_unit(cfg)
 
-            try:
-                module_path = f"node.{module_name}"
-                module = importlib.import_module(module_path)
-                vst_class = getattr(module, full_class_name)
-                
-                instance = vst_class(
-                    sys_id=self.sys_id,
-                    role=role,
-                    params=params,
-                    mqtt_client=self.mqtt,
-                    event_callback=self.on_vst_event
-                )
-                self.units[role] = instance
-                logger.info(f"✅ [{role}] Activated")
-            except Exception as e:
-                logger.error(f"❌ [{role}] Activation failed: {e}")
+    def _activate_unit(self, cfg):
+        """個別の VST ユニットを動的にロードして起動/再起動する"""
+        role = cfg['vst_role_name']
+        module_name = cfg.get('vst_module') or f"vst_{cfg['vst_class'].lower()}"
+        class_name = cfg['vst_class']
+        full_class_name = class_name if class_name.startswith("VST_") else f"VST_{class_name}"
+        
+        params = cfg.get('val_params', {})
+        if isinstance(params, str):
+            try: params = json.loads(params)
+            except: params = {}
+        
+        for key in ['hw_driver', 'hw_bus_addr', 'vst_type']:
+            if key in cfg and cfg[key] is not None:
+                params[key] = cfg[key]
+
+        if role in self.units:
+            logger.info(f"♻️ Reloading unit: {role}")
+            try: self.units[role].stop()
+            except: pass
+
+        try:
+            module_path = f"node.{module_name}"
+            module = importlib.import_module(module_path)
+            # 開発中は reload を有効化
+            importlib.reload(module)
+            
+            vst_class = getattr(module, full_class_name)
+            
+            instance = vst_class(
+                sys_id=self.sys_id,
+                role=role,
+                params=params,
+                mqtt_client=self.mqtt,
+                event_callback=self.on_vst_event
+            )
+            self.units[role] = instance
+            logger.info(f"✅ [{role}] Activated")
+            
+        except Exception as e:
+            logger.error(f"❌ [{role}] Activation failed: {e}")
 
     def run(self):
         """メインループ"""
         self.setup_mqtt()
+        
+        # 💡 起動時に自ノードのステータスをリセット
+        try:
+            self.db.reset_node_status(self.sys_id)
+            logger.info(f"🧹 Reset status for {self.sys_id}")
+        except Exception as e:
+            logger.warning(f"Failed to reset status: {e}")
+
         self.load_and_init_units()
         
         try:
@@ -258,7 +284,6 @@ class MainManager:
                     except Exception as e: logger.error(f"Poll error: {e}")
 
                 if now - self.last_sync_time > self.sync_interval:
-                    # ハートビート更新
                     self.db.update_node_heartbeat(self.sys_id, "online")
                     self.load_and_init_units()
                     self.last_sync_time = now

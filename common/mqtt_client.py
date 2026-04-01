@@ -85,6 +85,20 @@ class MQTTClient:
         topic = f"nodes/{sys_id}/{role}/env"
         return self.publish(topic, data)
 
+    def publish_res(self, sys_id, role, cmd_id, cmd_status, val_status="acknowledged", log_msg=""):
+        """
+        WES 2026 準拠: コマンドに対する応答 (ACK/結果) を送信する
+        Hub側の `acked_at` や `completed_at` を更新させるための必須メソッド
+        """
+        topic = f"nodes/{sys_id}/{role}/res"
+        data = {
+            "ref_cmd_id": cmd_id,
+            "cmd_status": cmd_status,  # "acknowledged" か "completed" を期待
+            "val_status": val_status,
+            "log_msg": log_msg
+        }
+        return self.publish(topic, data)
+
     def publish(self, topic, data):
         """汎用的なパブリッシュ（データをJSONに変換）"""
         payload = json.dumps(data, ensure_ascii=False)
