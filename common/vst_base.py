@@ -18,28 +18,28 @@ class WildLinkVSTBase:
     """
 
     def __init__(self, sys_id, role, params=None, mqtt_client=None, event_callback=None):
-        """
-        引数を整理し、継承先での super().__init__ 呼び出しエラーを防ぎます。
-        """
         self.sys_id = sys_id
-        self.vst_role_name = role  # WES 2026 標準カラム名
-        self.role = role           # 内部参照用
+        self.vst_role_name = role 
+        self.role = role 
         self.params = params or {}
         self.mqtt = mqtt_client
         self.event_callback = event_callback
         
-        # DB操作用ブリッジ
         self.db = DBBridge()
         
         # --- WES 2026 標準ステータス変数の初期化 ---
-        self.val_status = "idle"       # デバイスの物理状態 (idle/streaming/error等)
-        self.val_enabled = self.params.get("val_enabled", True)
+        self.val_status = "idle"       # idle/streaming/error/starting
+        self.log_code = 200            # ハイブリッドエラーコード (200: OK, 4xx/5xx: Error)
+        self.log_ext = {}              # 詳細コンテキスト (旧 val_params を JSON辞書として保持)
         self.log_msg = "Initialized"
-        self.log_code = 200            # ハイブリッドエラーコード (WES 2026 条項8)
-        self.ref_cmd_id = 0            # 処理中のコマンドID (0はコマンドなし)
         
-        # 起動時のパラメータ展開 (DBの val_params を属性として展開)
+        self.val_enabled = self.params.get("val_enabled", True)
+        self.ref_cmd_id = 0            # 処理中のコマンドID
+        
+        # 起動時のパラメータ展開 (log_ext への変換を含む)
         if isinstance(self.params, dict):
+            # DBの log_ext (JSON) を復元
+            self.log_ext = self.params.get("log_ext", {})
             for key, value in self.params.items():
                 if any(key.startswith(pre) for pre in ["val_", "hw_", "net_"]):
                     setattr(self, key, value)
@@ -76,27 +76,28 @@ class WildLinkVSTBase:
 
     def send_response(self, cmd_status=None, log_msg=None, log_code=None):
         """
-        [WES 2026] Hub に対して /res トピックで応答を送る。
-        cmd_status (プロトコル層) と val_status (デバイス層) を分離して送信します。
+        Hub に対して /res トピックで応答を送り、DBのステータスも連動させる。
         """
         if log_msg: self.log_msg = log_msg
         if log_code: self.log_code = log_code
 
-        # 1. レスポンスペイロードの構築
+        # 1. DBのステータスを現在の状態で同期
+        self.update_status()
+
+        # 2. レスポンスペイロードの構築
         res_payload = {
             "vst_role_name": self.vst_role_name,
-            "cmd_status": cmd_status,      # acknowledged / completed / failed
-            "val_status": self.val_status,  # idle / streaming / error / starting
+            "cmd_status": cmd_status,
+            "val_status": self.val_status,
             "ref_cmd_id": self.ref_cmd_id,
             "log_msg": self.log_msg,
             "log_code": self.log_code,
+            "log_ext": self.log_ext,
             "timestamp": time.time()
         }
 
-        # 2. Manager を通じて MQTT 送信 (nodes/{sys_id}/{role}/res)
         self.notify_manager("result", res_payload)
         
-        # 3. DBの node_commands テーブルを更新 (cmd_status がある場合)
         if cmd_status and self.ref_cmd_id:
             self.finalize_command(status=cmd_status, msg=self.log_msg, code=self.log_code)
 
@@ -148,17 +149,32 @@ class WildLinkVSTBase:
         payload.update(data_dict)
         self.notify_manager("data_pushed", payload)
 
-    def update_status(self, payload=None):
+    def update_status(self, val_status=None, log_code=None, log_ext=None):
         """
-        現在の全パラメータを抽出し、DBの node_status_current を更新する。
-        [WES 2026 準拠] 
-        payloadがNoneなら生存報告のみ、dictなら属性値をDBへ同期する。
+        [WES 2026 準拠] DBの node_status_current を更新する。
+        引数が指定された場合は内部変数を更新してからDBへ書き込む。
         """
-        if payload is None:
-            payload = {}
+        if val_status is not None: self.val_status = val_status
+        if log_code is not None: self.log_code = log_code
+        if log_ext is not None: 
+            # 辞書ならマージ、それ以外なら上書き
+            if isinstance(log_ext, dict) and isinstance(self.log_ext, dict):
+                self.log_ext.update(log_ext)
+            else:
+                self.log_ext = log_ext
+
+        # DBへ書き込むペイロードの構築
+        # DBBridge.update_node_status が log_code, log_ext を扱える前提
+        payload = {
+            "val_status": self.val_status,
+            "log_code": self.log_code,
+            "log_ext": self.log_ext
+        }
         
-        # DBBridge側のメソッドに丸投げして、sys_id, role, payloadを処理
-        self.db.update_node_status(self.sys_id, self.role, payload)
+        try:
+            self.db.update_node_status(self.sys_id, self.role, payload)
+        except Exception as e:
+            logger.error(f"[{self.role}] Failed to update DB status: {e}")
 
     # ---------------------------------------------------------
     # ユーティリティ
@@ -173,6 +189,7 @@ class WildLinkVSTBase:
         """現在の全 prefixed 属性を辞書形式で抽出"""
         data = {"vst_role_name": self.vst_role_name, "ref_cmd_id": self.ref_cmd_id}
         for key, value in self.__dict__.items():
+            # log_code や log_ext も log_ プレフィックスにより自動的に収集される
             if any(key.startswith(pre) for pre in ["val_", "env_", "sys_", "log_", "net_", "act_", "hw_"]):
                 if isinstance(value, (str, int, float, bool, list, dict)) or value is None:
                     data[key] = value
@@ -188,6 +205,7 @@ class WildLinkVSTBase:
         """
         [重要] ユニット停止時のクリーンアップ。
         継承先では、必ずプロセス終了ロジック(条項15)を実装すること。
+        [WES 2026] 停止時は idle 状態をDBへ報告してから終了
         """
-        logger.info(f"[{self.role}] Stopping unit and cleaning up...")
-        self.val_status = "idle"
+        logger.info(f"[{self.role}] Stopping unit...")
+        self.update_status(val_status="idle", log_code=200)

@@ -34,17 +34,19 @@ class MainManager:
         self.sys_id = SYS_ID
         self.db = DBBridge()
         self.mqtt = None
-        self.units = {}           # 稼働中の VST インスタンス {role_name: instance}
+        self.units = {}           # 稼働中の VST インスタンス
         self.links = []           # VST間の連動設定
         self.active_timers = {}   # 連動用オフタイマー
         self.running = True
+        self._stopping = False    # 2重停止防止フラグ
         
         self.current_config_raw = ""
         self.last_sync_time = 0
         self.sync_interval = 30   # DBとの同期間隔
-        
+
         self.config_cache_path = os.path.join(current_dir, 'last_config.json')
 
+        # config_loader から取得した HUB_IP を保持
         self.hub_ip = config_loader.HUB_IP
         
         # 終了シグナルのトラップ
@@ -107,27 +109,20 @@ class MainManager:
 
     def on_vst_event(self, source_role, event_type, payload=None):
         """
-        ユニットから発生したイベントを処理する。
-        1. MQTTでHubに通知 (Forwarding)
-        2. ノード内の他ユニットを動かす (Linkage)
+        ユニットから発生したイベントを処理
         """
         payload = payload or {}
-        cmd_id = payload.get("ref_cmd_id") or payload.get("cmd_id", 0)
+        # WES 2026: 共通プレフィックス log_code 等が payload に含まれていることを期待
         
-        # WES 2026: 命令の結果なら 'res'、自律的な変化なら 'event' トピックへ
+        # MQTTでHubに通知
         msg_type = "res" if event_type in ["result", "completed", "failed"] else "event"
         pub_topic = f"nodes/{self.sys_id}/{source_role}/{msg_type}"
-        
-        # ペイロードの整備
-        payload["event"] = event_type
-        if cmd_id: payload["ref_cmd_id"] = cmd_id
-
         self.mqtt.publish(pub_topic, json.dumps(payload))
-        logger.info(f"🔔 [Event] {source_role}:{event_type} -> {pub_topic}")
 
-        # 連動設定 (vst_links) のチェックと実行
+        # 連動設定の実行
         matched_links = [l for l in self.links if l['source_role'] == source_role and l.get('event_type') == event_type]
         for link in matched_links:
+            # [WES 2026 条項20] リンク動作時は lnk_[id] 名義でステータスを更新する運用を推奨
             self.execute_link(link)
 
     def execute_link(self, link):
@@ -158,16 +153,32 @@ class MainManager:
     # ユニットライフサイクル管理
     # ---------------------------------------------------------
 
+    def sync_status_records(self, configs):
+        """
+        [WES 2026 条項19] 起動・更新時、activeなユニットのレコードが 
+        node_status_current に存在することを保証する
+        """
+        for cfg in configs:
+            role = cfg['vst_role_name']
+            # INSERT IGNORE により、存在しない場合のみ初期値 'idle' で作成
+            self.db.execute(
+                "INSERT IGNORE INTO node_status_current (sys_id, vst_role_name, val_status, log_code) VALUES (%s, %s, 'idle', 200)",
+                (self.sys_id, role)
+            )
+
     def load_and_init_units(self):
         """DBから設定を取得し、ユニットの生成・破棄を差分で行う"""
         try:
             configs = self.db.fetch_node_config(self.sys_id)
             links = self.db.fetch_vst_links(self.sys_id)
-        except Exception:
-            logger.error("❌ DB Offline. Using configuration cache.")
-            return # 本来はここでキャッシュ読み込み処理
+            
+            # WES 2026: ステータステーブルの同期
+            self.sync_status_records(configs)
+            
+        except Exception as e:
+            logger.error(f"❌ DB Access Error: {e}")
+            return 
 
-        # 構成の変更をチェック (簡易ハッシュ比較)
         new_config_raw = json.dumps(configs, sort_keys=True, default=str)
         if new_config_raw == self.current_config_raw:
             return 
@@ -176,7 +187,6 @@ class MainManager:
         self.current_config_raw = new_config_raw
         self.links = links
 
-        # 既存ユニットのうち、設定から消えたものを停止・削除
         active_roles = [c['vst_role_name'] for c in configs]
         for role in list(self.units.keys()):
             if role not in active_roles:
@@ -184,31 +194,29 @@ class MainManager:
                 self.units[role].stop()
                 del self.units[role]
 
-        # 各ユニットの起動・更新
         for cfg in configs:
             self._activate_unit(cfg)
 
     def _activate_unit(self, cfg):
         role = cfg['vst_role_name']
         vst_class_name = cfg['vst_class']
-        # vst_camera.py 等のファイル名を特定
         module_name = cfg.get('vst_module') or f"vst_{vst_class_name.lower()}"
         
         params = cfg.get('val_params', {})
-        # 追加ハードウェア情報を注入
+        
+        # --- [WES 2026 追加項目] 共通情報の注入 ---
         params.update({
             'hw_driver': cfg.get('hw_driver'),
             'hw_bus': cfg.get('hw_bus'),
-            'hw_addr': cfg.get('hw_bus_addr')
+            'hw_addr': cfg.get('hw_bus_addr'),
+            'net_hub_ip': self.hub_ip  # VSTユニットが配信先を知るために注入
         })
 
         try:
-            # 動的インポート
             module = importlib.import_module(f"node.{module_name}")
             importlib.reload(module)
             vst_class = getattr(module, f"VST_{vst_class_name}")
 
-            # インスタンス生成
             instance = vst_class(
                 sys_id=self.sys_id,
                 role=role,
@@ -219,7 +227,7 @@ class MainManager:
             
             if role in self.units: self.units[role].stop()
             self.units[role] = instance
-            logger.info(f"✅ Unit Activated: {role} ({vst_class_name})")
+            logger.info(f"✅ Unit Activated: {role} ({vst_class_name}) @ HUB:{self.hub_ip}")
             
         except Exception as e:
             logger.error(f"❌ Failed to activate {role}: {e}")
@@ -230,6 +238,11 @@ class MainManager:
 
     def run(self):
         """起動シーケンス"""
+        # --- 信号ハンドラの設定 ---
+        # Systemd や Ctrl+C の信号を self.stop で受け取るようにする
+        signal.signal(signal.SIGTERM, self.stop)
+        signal.signal(signal.SIGINT, self.stop)
+
         logger.info(f"🚀 MainManager starting... (ID: {self.sys_id})")
         self.setup_mqtt()
         
@@ -258,18 +271,43 @@ class MainManager:
                     self.last_sync_time = now
 
                 time.sleep(0.1)
+        except Exception as e:
+            logger.error(f"🔥 Main loop error: {e}")
         finally:
-            self.stop()
+            self.stop() # 念のため最後に呼ぶ（2重実行はフラグで防止される）
 
     def stop(self, signum=None, frame=None):
+        """停止処理（信号ハンドラとしても動作）"""
+        if self._stopping:
+            return # すでに停止中なら無視
+        self._stopping = True
+        
         self.running = False
-        logger.info("🛑 Shutting down Manager and Units...")
-        for unit in self.units.values():
-            try: unit.stop()
+        logger.info(f"🛑 Shutting down Manager and Units... (Signal: {signum})")
+        
+        for unit_name, unit in self.units.items():
+            try:
+                unit.stop()
+            except Exception as e:
+                # role_name がないユニット(VST_Systemなど)でもエラーで落ちないようにする
+                # r_name = getattr(unit, 'role_name', unit_name)
+                r_name = getattr(unit, 'role', unit_name)
+                logger.error(f"Error stopping unit {r_name}: {e}")
+        
+        if self.mqtt:
+            try: self.mqtt.disconnect()
             except: pass
-        if self.mqtt: self.mqtt.disconnect()
-        if GPIO: GPIO.cleanup()
+
+        # GPIO の安全な後片付け
+        try:
+            if GPIO and GPIO.getmode() is not None:
+                GPIO.cleanup()
+                logger.info("🔌 GPIO cleaned up.")
+        except:
+            pass
+
         logger.info("👋 Shutdown complete.")
+        # sys.exit(0) は不要（runのwhileが抜けるため）
 
 if __name__ == "__main__":
     MainManager().run()

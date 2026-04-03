@@ -111,4 +111,4 @@ class VST_System(WildLinkVSTBase):
 
     def stop(self):
         """終了時のクリーンアップ"""
-        logger.info(f"Stopping {self.role_name} unit.")
+        logger.info(f"Stopping {self.role} unit.")

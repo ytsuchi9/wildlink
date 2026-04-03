@@ -29,7 +29,7 @@ class StreamStore:
     def __init__(self):
         self.frames = {}         # {port: b"jpeg_data"}
         self.last_update = {}    # {port: timestamp}
-        self.assembly = {}       # {port: [chunks]}
+        self.assembly = {}       # {port: {"frame_id": int, "chunks": [None]}}
         self.is_streaming = {}   # {port: bool}
         self.port_to_sysid = {} 
         self.port_to_role = {}   # {5005: "cam_main"}
@@ -55,24 +55,22 @@ class StreamStore:
                 if self.is_streaming.get(port) and (now - self.last_update.get(port, 0) > 5.0):
                     role = self.port_to_role.get(port, "unknown")
                     sys_id = self.port_to_sysid.get(port, "unknown")
-                    logger.warning(f"⏰ [Timeout] Stream for {role} (port:{port}) lost. Cleaning up.")
+                    logger.warning(f"⏰ [Timeout] Stream for {role} (port:{port}) lost.")
                     
                     self.is_streaming[port] = False
                     self._sync_status(sys_id, role, "idle")
-                    # UI側にも停止を伝える
                     self.publish_wes_event(sys_id, role, "stream_lost")
             time.sleep(2)
 
     def _sync_status(self, sys_id, role, status):
         """DBの状態を更新"""
         try:
-            # 物理状態を DB に同期
-            self.db.update_node_status(sys_id, role, {"val_status": status, "log_msg": "Set by RX monitor"})
+            self.db.update_node_status(sys_id, role, {"val_status": status, "log_msg": "RX monitor update"})
         except Exception as e:
             logger.error(f"❌ [DB Sync Error] {e}")
 
     def update_frame(self, port, sys_id, frame):
-        """UDP受信スレッドから呼ばれる"""
+        """UDP受信スレッドから呼ばれる。新しいフレームが完成した時の処理"""
         self.frames[port] = frame
         self.last_update[port] = time.time()
         self.port_to_sysid[port] = sys_id
@@ -82,22 +80,17 @@ class StreamStore:
             self.is_streaming[port] = True
             role = self.port_to_role.get(port)
             if role:
-                logger.info(f"🚀 [WMP RX] First frame received for {role} on port {port}.")
-                # 1. DBを更新
+                logger.info(f"🚀 [WMP RX] Streaming started: {role} (port:{port})")
                 self._sync_status(sys_id, role, "streaming")
-                # 2. UIキック用の WES イベントを発行（Hub Manager が中継する）
                 self.publish_wes_event(sys_id, role, "stream_ready", {"net_port": port})
 
     def publish_wes_event(self, sys_id, role, event_name, extra=None):
-        """Hub Manager が拾える形式で MQTT イベントをパブリッシュ"""
         payload = {
             "event": event_name,
             "val_status": "streaming" if "ready" in event_name else "idle",
             "time": int(time.time())
         }
-        if extra:
-            payload.update(extra)
-            
+        if extra: payload.update(extra)
         topic = f"nodes/{sys_id}/{role}/event"
         self.mqtt_client.publish(topic, json.dumps(payload))
 
@@ -114,7 +107,6 @@ def get_vst_mapping():
     mapping = {}
     hub_id = os.getenv("SYS_ID", "hub_001") 
     try:
-        # DBから自身の管理下にあるVSTの設定（ポート番号など）を取得
         rows = db.fetch_node_config(hub_id)
         for r in rows:
             role = r.get('vst_role_name')
@@ -124,7 +116,6 @@ def get_vst_mapping():
                 p_int = int(port)
                 mapping[role] = p_int
                 store.port_to_role[p_int] = role
-        logger.debug(f"📋 VST-Port Mapping: {mapping}")
     except Exception as e:
         logger.error(f"❌ [Mapping Error] {e}")
     return mapping
@@ -133,36 +124,54 @@ def get_vst_mapping():
 def udp_receiver(port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    # バッファサイズを拡張（パケット落ち対策）
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * 1024 * 1024)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
     sock.bind(("0.0.0.0", port))
     
-    logger.info(f"📡 [UDP] Receiver started on port {port}")
+    logger.info(f"📡 [UDP] Listening on port {port}")
     
     while True:
         try:
             data, addr = sock.recvfrom(65535)
-            # WMP ヘッダー解読
-            res = WMPHeader.unpack(data)
-            if not res: continue
+            header = WMPHeader.unpack(data)
+            if not header: continue
             
-            sys_id, p_len, f_idx, f_total = res[1], res[5], res[7], res[8]
+            # header = (ver, sys_id, role, f_id, seq, p_len, f_idx, f_total)
+            # wmp_core.py の pack 順序に合わせてインデックスを厳密に指定
+            sys_id = header[1]
+            f_id   = header[3]
+            p_len  = header[5]
+            f_idx  = header[6]
+            f_total= header[7]
+            
             payload = data[32:32+p_len]
 
             if f_total == 1:
                 store.update_frame(port, sys_id, payload)
             else:
-                if f_idx == 0:
-                    store.assembly[port] = [None] * f_total
-                
-                if port in store.assembly:
-                    store.assembly[port][f_idx] = payload
-                    if all(v is not None for v in store.assembly[port]):
-                        full_frame = b"".join(store.assembly[port])
+                # 1. 未知のポート、または新しいフレームIDが来たら初期化
+                if port not in store.assembly or store.assembly[port]["frame_id"] != f_id:
+                    # f_total が異常な値（巨大すぎるなど）でないか簡易チェック
+                    if 0 < f_total < 1000: 
+                        store.assembly[port] = {"frame_id": f_id, "chunks": [None] * f_total}
+                    else:
+                        continue
+
+                # 2. 境界チェック（ここが index out of range 対策！）
+                if 0 <= f_idx < len(store.assembly[port]["chunks"]):
+                    store.assembly[port]["chunks"][f_idx] = payload
+                    
+                    # 3. 全チャンクが揃ったか確認
+                    if all(v is not None for v in store.assembly[port]["chunks"]):
+                        full_frame = b"".join(store.assembly[port]["chunks"])
                         store.update_frame(port, sys_id, full_frame)
-                        store.assembly[port] = []
+                        # メモリ節約のため、完了したフレームの chunks はクリア
+                        store.assembly[port]["chunks"] = [] 
+                else:
+                    logger.debug(f"⚠️ [UDP] Invalid chunk index: {f_idx}/{f_total}")
+
         except Exception as e:
-            logger.error(f"❌ [UDP Error] Port {port}: {e}")
+            # ログが溢れないよう、エラー内容を具体的に出力
+            logger.error(f"❌ [UDP Error] Port {port}: {type(e).__name__}: {e}")
             time.sleep(0.01)
 
 # --- 5. Flask MJPEG 配信 ---
@@ -176,10 +185,10 @@ def generate_mjpeg(port):
                 last_h = curr_h
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            time.sleep(0.01) # 最速で送信
         else:
-            # 映像が途切れたらNO SIGNAL的な画像を出すか終了する
-            break
-        time.sleep(0.05) # 約20fps制限でCPU負荷軽減
+            # タイムアウトした場合はNO SIGNAL画像を表示するか、コネクションを閉じる
+            time.sleep(0.5)
 
 @app.route('/stream/<target>')
 def stream(target):
@@ -192,11 +201,12 @@ def stream(target):
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
-    # 起動時に一度マッピングを確認してスレッドを開始
+    # 起動時に必要な全ポートのスレッドを開始
     initial_mapping = get_vst_mapping()
     for p in initial_mapping.values():
         t = threading.Thread(target=udp_receiver, args=(p,), daemon=True)
         t.start()
         
-    logger.info(f"🚀 [HTTP] MJPEG Bridge started on port 8080")
+    logger.info(f"🚀 [WMP RX] MJPEG Bridge started on port 8080")
+    # debug=False にしないとスレッドが二重起動するので注意
     app.run(host='0.0.0.0', port=8080, threaded=True, debug=False)
