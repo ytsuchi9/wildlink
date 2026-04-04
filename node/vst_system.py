@@ -100,7 +100,8 @@ class VST_System(WildLinkVSTBase):
             }
             
             # WES 2026: node_status_current への書き込みと MQTT 発信
-            self.update_status(status_payload)
+            # WES 2026: 第一引数(val_status)と間違われないようキーワード引数で渡す
+            self.update_status(val_status="online", log_ext=status_payload)
             
             logger.debug(f"📊 [System Metrics] CPU:{self.sys_cpu_t}°C, Load:{self.sys_cpu_u}%")
             

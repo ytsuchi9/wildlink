@@ -145,7 +145,7 @@ class WildLinkHubManager:
         elif status == "completed":
             self.db.finalize_command(
                 cmd_id=cmd_id,
-                status="success",
+                status="completed",
                 log_msg=payload.get('log_msg', 'Completed'),
                 log_code=payload.get('log_code', 200),
                 res_payload=payload

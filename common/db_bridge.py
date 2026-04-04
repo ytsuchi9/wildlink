@@ -1,8 +1,20 @@
 import mysql.connector
+from mysql.connector import Error
 import os
 import json
+import logging
 from dotenv import load_dotenv
 from datetime import datetime
+
+# 🌟 DBBridge専用のロガー（DBには書き込まず、コンソールにだけ出す）
+# これにより、循環インポートと無限ループを両方回避します
+db_logger = logging.getLogger("db_bridge_safe")
+if not db_logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s - %(message)s')
+    handler.setFormatter(formatter)
+    db_logger.addHandler(handler)
+    db_logger.setLevel(logging.ERROR)
 
 class DBBridge:
     def __init__(self, dotenv_path=None):
@@ -50,11 +62,11 @@ class DBBridge:
             return True
         except Exception as e:
             # --- ここからデバッグ用修正 ---
-            logger.error("-" * 50)
-            logger.error(f"🔥 [DBBridge] Execute Error: {e}")
-            logger.error(f"📍 SQL: {sql}")
-            logger.error(f"📦 Params: {params}")
-            logger.error("-" * 50)
+            # 🌟 安全なロガーで出力。これなら無限ループしません
+            db_logger.error("-" * 50)
+            db_logger.error(f"🔥 [DBBridge] Execute Error: {e}")
+            db_logger.error(f"📍 SQL: {sql}")
+            db_logger.error("-" * 50)
             # --- ここまで ---
             return False
 
@@ -193,30 +205,29 @@ class DBBridge:
         return self.execute(query, (status, cmd_id))
 
     def mark_command_acknowledged(self, cmd_id):
-        """ コマンド受領処理 """
-        sql = "UPDATE node_commands SET acked_at = NOW(3), val_status = 'acknowledged' WHERE id = %s AND acked_at IS NULL"
+        """ コマンド受領処理 (WES 2026: ステータス逆転防止ガード付き) """
+        sql = """
+            UPDATE node_commands 
+            SET acked_at = NOW(3), val_status = 'acknowledged' 
+            WHERE id = %s 
+              AND acked_at IS NULL 
+              AND val_status NOT IN ('completed', 'error')
+        """
         return self.execute(sql, (cmd_id,))
 
     def finalize_command(self, cmd_id, status, log_msg='', log_code=200, res_payload=None):
         if not cmd_id or cmd_id == 0: return False
-
-        # デバッグ：実際に書き込もうとしているステータスの長さをチェック
-        if len(str(status)) > 20:
-            print(f"⚠️ DEBUG: val_status is too long! Content: {status}")
-        
-        # 暫定処置：強制的にカットしてエラーを防ぐ
-        safe_status = str(status)[:45]
-
-        #ここまで
-        
-        # "completed" も成功ステータスとして許容するように修正
-        #final_status = status if status in ["success", "completed", "error"] else "error"
-        final_status = safe_status if safe_status in ["success", "completed", "error"] else "error"
-
+        final_status = status if status in ["success", "completed", "error"] else "error"
         res_json = json.dumps(res_payload, ensure_ascii=False) if res_payload else None
+        
+        # 🌟 log_ext ではなく log_msg に戻す
         sql = """
             UPDATE node_commands 
             SET val_status = %s, log_msg = %s, log_code = %s, val_res_payload = %s, completed_at = NOW(3) 
             WHERE id = %s
         """
-        return self.execute(sql, (final_status, log_msg, log_code, res_json, cmd_id))
+        try:
+            return self.execute(sql, (final_status, log_msg, log_code, res_json, cmd_id))
+        except Exception as e:
+            logger.error(f"Finalize SQL Error: {e}")
+            return False

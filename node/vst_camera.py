@@ -131,7 +131,18 @@ class VST_Camera(WildLinkVSTBase):
 
         try:
             self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
-            
+            # --- 🚀 修正ポイント1: Popen直後の生存確認 ---
+            try:
+                # 0.8秒だけ待つ。死ぬならここで死ぬ。
+                self.process.wait(timeout=0.8)
+                # ここに来る＝即死した
+                stderr_output = self.process.stderr.read().decode('utf-8', errors='ignore')
+                self.send_response("error", log_msg=f"Process died: {stderr_output[:100]}", log_code=500)
+                return 
+            except subprocess.TimeoutExpired:
+                # 正常：まだ動いている
+                pass
+            # ----------------------------------------
             fd = self.process.stdout.fileno()
             fl = fcntl.fcntl(fd, fcntl.F_GETFL)
             fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
@@ -153,37 +164,38 @@ class VST_Camera(WildLinkVSTBase):
                     time.sleep(0.005)
                     continue
 
-                # 🌟 [3/13版踏襲] フレーム切り出しロジックの強化
-                while True:
-                    start = buffer.find(b'\xff\xd8')
-                    if start == -1:
-                        # SOIが見つからない場合、バッファの最後が \xff なら1バイト残して捨てる
-                        buffer = buffer[-1:] if buffer.endswith(b'\xff') else b""
-                        break
+                # 🌟 修正版：サイズ・ヒューリスティックによる切り出し
+                start = buffer.find(b'\xff\xd8')
+                if start != -1:
+                    eoi_pos = buffer.find(b'\xff\xd9', start)
                     
-                    # SOIより前のデータは不要なので捨てる
-                    buffer = buffer[start:]
-                    
-                    # 捨てた後のバッファから EOI を探す
-                    end = buffer.find(b'\xff\xd9')
-                    if end != -1:
-                        # 1枚のJPEGを切り出し
-                        frame = buffer[:end+2]
-                        self.wmp.send_large_data(sock, dest_addr, frame)
+                    if eoi_pos != -1:
+                        frame_size = (eoi_pos + 2) - start
                         
-                        if not first_frame_sent:
-                            # 🌟 最初の1フレームを送った瞬間にステータスを「完了」に更新
-                            self.act_run = True
-                            self.update_status(val_status="streaming", log_code=200)
-                            self.send_response("completed", log_msg="Streaming started", log_code=200)
-                            self.send_event("streaming_started", {"net_port": self.net_port})
-                            first_frame_sent = True
+                        if frame_size > 5000:
+                            # ✅ 本物のフレーム：送信してバッファから消す
+                            frame = buffer[start:eoi_pos+2]
+                            self.wmp.send_large_data(sock, dest_addr, frame)
+                            
+                            if not first_frame_sent:
+                                self.act_run = True
+                                self.update_status(val_status="streaming", log_code=200)
+                                # 👇 ここで send_response ("completed") を呼ぶと、
+                                # STARTコマンドが即座に終わったとみなされ、管理側との同期でストリームが乱れる原因になります。
+                                # 「受け付けた」という acknowledged だけに留めるか、
+                                # ストリーム開始は status 更新のみにするのが安全です。
+                                # self.send_response("completed", ...) は削除または慎重に。
+                                # 👇 cmd_status="completed" を送るのをやめ、イベント通知のみにする
+                                self.send_event("streaming_started")
+                                first_frame_sent = True
 
-                        buffer = buffer[end+2:]
-                    else:
-                        # EOIがまだ来ていないので、次のreadを待つ
-                        break
-        
+                            buffer = buffer[eoi_pos+2:]
+                        else:
+                            # 🗑️ ゴミ（サムネイル等）：バッファから消して、次を探す
+                            # これを入れないと、startがずっとゴミの先頭を指し続けてしまいます
+                            buffer = buffer[eoi_pos+2:]
+                            continue # 次のループへ（もう一度 buffer.find をさせる）
+
         except Exception as e:
             logger.error(f"[{self.role}] Streaming error: {e}")
             self.send_response("error", log_msg=str(e), log_code=500)
