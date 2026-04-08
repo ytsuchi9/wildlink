@@ -2,8 +2,14 @@
 /**
  * =========================================================
  * WildLink Event Standard (WES) 2026 準拠
- * 役割: ブラウザから受け取ったコマンドをDBに記録し、
- * 各デバイスの役割(Role)に合わせたMQTTトピックへ発行する
+ * コンポーネント: [UI/API] api/send_cmd.php
+ * * 【フェーズ2: イベント駆動アーキテクチャへの対応】
+ * 役割: ブラウザから受け取った操作要求をDBに記録(pending)し、
+ * Hub(ハブマネージャー)へ「更新の合図(kick)」のみを送る。
+ * * 責務の厳格化:
+ * - このスクリプトは直接Nodeへコマンドを送信(mosquitto_pub)しません。
+ * - 二重送信を防ぐため、実際のコマンドパブリッシュとステータス管理('sent'への更新)は
+ * すべてHub側の hub_manager.py が一元的に担当します。
  * =========================================================
  */
 
@@ -30,17 +36,16 @@ try {
         throw new Exception("Invalid JSON format in cmd_json.");
     }
 
-    // 💡【修正ポイント】WES 2026: トピック階層化とDB紐付けのための 'role' を抽出
+    // 💡 WES 2026: トピック階層化とDB紐付けのための 'role' を抽出
     $target_role = isset($payload_data['role']) ? $payload_data['role'] : 'system';
 
-    // 3. データベース (node_commandsテーブル) へコマンドを登録
-    // 💡【修正ポイント】vst_role_name カラムに $target_role を明示的に保存する
+    // 3. データベース (node_commandsテーブル) へコマンドを登録 (ステータスは pending のまま)
     $stmt = $pdo->prepare("
         INSERT INTO node_commands (sys_id, vst_role_name, cmd_type, cmd_json, val_status, created_at) 
         VALUES (:sys_id, :vst_role_name, :cmd_type, :cmd_json, 'pending', NOW())
     ");
     $stmt->bindValue(':sys_id', $sys_id, PDO::PARAM_STR);
-    $stmt->bindValue(':vst_role_name', $target_role, PDO::PARAM_STR); // 👈 これが重要
+    $stmt->bindValue(':vst_role_name', $target_role, PDO::PARAM_STR);
     $stmt->bindValue(':cmd_type', $cmd_type, PDO::PARAM_STR);
     $stmt->bindValue(':cmd_json', $cmd_json, PDO::PARAM_STR);
     $stmt->execute();
@@ -48,40 +53,42 @@ try {
     // 発行された一意のコマンドID（cmd_id）を取得
     $cmd_id = $pdo->lastInsertId();
 
-    // 4. MQTTペイロードの再構築
-    $payload_data['cmd_id'] = (int)$cmd_id;
-    $mqtt_payload = json_encode($payload_data, JSON_UNESCAPED_UNICODE);
+    // 4. MQTTでHubへ「キック(合図)」を送信する
+    // 🌟【修正ポイント】: 直接Node宛のトピック(nodes/...)には送らず、
+    // Hubの目覚まし用トピック(system/hub/kick)に通知だけを送る。
+    $kick_topic = "system/hub/kick";
+    $kick_payload = json_encode([
+        "event" => "new_command_pending",
+        "cmd_id" => (int)$cmd_id,
+        "sys_id" => $sys_id
+    ]);
 
-    // 💡 WES 2026: 宛先トピックの動的生成
-    $mqtt_topic = "nodes/{$sys_id}/{$target_role}/cmd";
-
-    // 5. MQTTブローカーへの Publish 処理
+    // ※ .env等の構成によっては動的に読むのがベストですが、UIとHubが同居している前提で127.0.0.1
     $broker_host = "127.0.0.1";
-    $escaped_topic = escapeshellarg($mqtt_topic);
-    $escaped_payload = escapeshellarg($mqtt_payload);
+    $escaped_topic = escapeshellarg($kick_topic);
+    $escaped_payload = escapeshellarg($kick_payload);
     
     $exec_cmd = "mosquitto_pub -h {$broker_host} -t {$escaped_topic} -m {$escaped_payload}";
     exec($exec_cmd, $output, $return_var);
 
     // 送信失敗時のエラーハンドリング
     if ($return_var !== 0) {
-        $err_stmt = $pdo->prepare("UPDATE node_commands SET val_status = 'error', log_msg = 'MQTT publish failed' WHERE id = :id");
+        $err_stmt = $pdo->prepare("UPDATE node_commands SET val_status = 'error', log_msg = 'Hub kick failed' WHERE id = :id");
         $err_stmt->bindValue(':id', $cmd_id, PDO::PARAM_INT);
         $err_stmt->execute();
         
-        throw new Exception("MQTT Broker unreachable or publish failed.");
+        throw new Exception("MQTT Broker unreachable or Hub kick failed.");
     }
 
-    // DB上のステータスを 'sent' に更新 (送信成功を記録)
-    $upd_stmt = $pdo->prepare("UPDATE node_commands SET val_status = 'sent', sent_at = NOW() WHERE id = :id");
-    $upd_stmt->bindValue(':id', $cmd_id, PDO::PARAM_INT);
-    $upd_stmt->execute();
+    // 🌟【修正ポイント】: 以前あった 'sent' への UPDATE 処理を削除。
+    // 'sent' への更新は、通知を受け取った hub_manager.py が実際にNodeへ送信した「直後」に行います。
 
-    // 6. ブラウザへ成功レスポンスを返す
+    // 5. ブラウザへ成功レスポンスを返す
     echo json_encode([
         "val_status" => "success",
         "command_id" => (int)$cmd_id,
-        "dispatched_topic" => $mqtt_topic
+        "message" => "Command registered and Hub kicked.",
+        "dispatched_topic" => $kick_topic
     ]);
 
 } catch (Exception $e) {

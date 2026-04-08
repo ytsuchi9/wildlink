@@ -4,13 +4,37 @@
 
 ## 1. 共通設計ルール (The Core Rules)
 
-* **トピック構造:** `nodes/{sys_id}/{vst_role_name}/{type}`
-  * `type`: `cmd` (命令), `res` (応答), `event` (状態/計測)
-* **動的デバイス命名 (Role-based Naming):** * ハードウェアの接続インターフェース名（例: `pi`, `usb`）はシステム管理に依存させず、役割名である `vst_role_name` (`cam_main`, `cam_sub`, `cam_rear` など) を使用して抽象化と動的切り替えを実現する。
-* **命名規則の規格化:**
-  * DB (`vst_class`): `Camera`, `System`, `Sensor`, `Switch` （先頭大文字）
-  * ファイル名 (`vst_module`): `vst_camera.py`, `vst_system.py` （すべて小文字、接頭辞 `vst_`）
-  * Pythonクラス名: `VST_Camera`, `VST_System` （`VST_` + DBの `vst_class`）
+              * **トピック構造:** `nodes/{sys_id}/{vst_role_name}/{type}`
+                * `type`: `cmd` (命令), `res` (応答), `event` (状態/計測)
+              * **動的デバイス命名 (Role-based Naming):** * ハードウェアの接続インターフェース名（例: `pi`, `usb`）はシステム管理に依存させず、役割名である `vst_role_name` (`cam_main`, `cam_sub`, `cam_rear` など) を使用して抽象化と動的切り替えを実現する。
+              * **命名規則の規格化:**
+                * DB (`vst_class`): `Camera`, `System`, `Sensor`, `Switch` （先頭大文字）
+                * ファイル名 (`vst_module`): `vst_camera.py`, `vst_system.py` （すべて小文字、接頭辞 `vst_`）
+                * Pythonクラス名: `VST_Camera`, `VST_System` （`VST_` + DBの `vst_class`）
+
+# グループ概念と完全疎結合 (.env定義):
+
+* 各ノード/ハブは .env に SYS_GROUP (例: kyoto_hq, hokkaido_branch) を定義し、自身が所属する論理グループを認識する。
+
+* 物理的なネットワークやDB/Hubの固定IP (HUB_IP 等) には依存せず、設定された MQTT_BROKER に繋がりさえすれば、同じグループのインフラに合流できる「プラグ＆プレイ」な設計とする。
+
+# トピック構造とルーティング:
+
+* アプリ層（不変）: nodes/{sys_id}/{vst_role_name}/{type} (type: cmd, res, event)
+
+* インフラ層（拡張）: エッジとクラウド等ネットワークが分かれる場合、コード上のトピック階層は変更せず、mosquitto.conf のブリッジ機能 (topic nodes/# both 1 "" {SYS_GROUP}/ 等) を用いて、ブローカー間で自律的に配信範囲を制御する。
+
+# 動的デバイス命名 (Role-based Naming):
+* ハードウェアの接続インターフェース名（例: pi, usb）はシステム管理に依存させず、役割名である vst_role_name (cam_main, cam_sub, cam_rear など) を使用して抽象化と動的切り替えを実現する。
+
+# 命名規則の規格化:
+
+* DB (vst_class): Camera, System, Sensor, Switch （先頭大文字）
+* ファイル名 (vst_module): vst_camera.py, vst_system.py （すべて小文字、接頭辞 vst_）
+* Pythonクラス名: VST_Camera, VST_System （VST_ + DBの vst_class）
+
+# 共通ライブラリの徹底:
+* プロトコルやアーキテクチャの変更（フェーズ移行）を吸収するため、各モジュールからの通信・データ処理は必ず common/mqtt_client.py, common/db_bridge.py などのインターフェースを経由させる。
 
 ---
 
@@ -31,25 +55,84 @@
 
 ---
 
+2. 環境変数設定規格 (.env Standards)
+システム全体で統一された .env キーを使用し、環境依存のハードコードを排除する。
+# 基本情報
+* SYS_GROUP: 所属する論理エリア/グループ名（ルーティングおよびブリッジ制御用）
+* SYS_ID: ノード自身の個体識別ID (Nodeのみ必須)
+# 通信関連 (MQTT)
+* MQTT_BROKER: 接続先ブローカーのIPアドレスまたはドメイン
+* MQTT_PORT: 接続ポート (デフォルト: 1883)
+# データベース関連
+* DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME
+* ※セキュリティ指針: フェーズ3移行後は、Node側の .env からDB接続情報を完全に削除し、Hub/Backend側のみで管理する。
+
+
+
+
 ## 3. コンポーネント別責務 (Component Roles)
 
-### [UI/API] `api/send_cmd.php`
-* **役割:** ユーザー操作をDBに記録し、MQTTでNodeへ初動命令を飛ばす。
-* **処理:** `INSERT INTO node_commands` (`val_status='sent'`, `sent_at=NOW()`)
-* **送信:** `nodes/{sys_id}/{vst_role_name}/cmd` 宛に JSON (`{"cmd_id": ID, "act_run": true}`) をパブリッシュ。
+                  ### [UI/API] `api/send_cmd.php`
+                  * **役割:** ユーザー操作をDBに記録し、MQTTでNodeへ初動命令を飛ばす。
+                  * **処理:** `INSERT INTO node_commands` (`val_status='sent'`, `sent_at=NOW()`)
+                  * **送信:** `nodes/{sys_id}/{vst_role_name}/cmd` 宛に JSON (`{"cmd_id": ID, "act_run": true}`) をパブリッシュ。
 
-### [HUB] Hub デーモン
-Hub側は機能ごとにデーモンを分割し、明確に役割を分担する。
-* **`hub_manager.py`:** コマンドのライフサイクル管理（DB監視、再送、`node_commands` の `acked_at`, `completed_at` 更新）。
-* **`status_engine.py`:** Nodeからの定時報告や環境データ (`env_`)、システムログの収集専任。
+                  ### [HUB] Hub デーモン
+                  Hub側は機能ごとにデーモンを分割し、明確に役割を分担する。
+                  * **`hub_manager.py`:** コマンドのライフサイクル管理（DB監視、再送、`node_commands` の `acked_at`, `completed_at` 更新）。
+                  * **`status_engine.py`:** Nodeからの定時報告や環境データ (`env_`)、システムログの収集専任。
 
-### [NODE] `node/main_manager.py`
-* **役割:** 自身の `sys_id` 宛の命令を受信し、適切な `VstUnit` へ分配する。
-* **処理:** `nodes/{my_id}/+/cmd` を一括購読。受領直後に `acknowledged` を返送し、対象ユニットの `control(payload)` を呼び出す。
+                  ### [NODE] `node/main_manager.py`
+                  * **役割:** 自身の `sys_id` 宛の命令を受信し、適切な `VstUnit` へ分配する。
+                  * **処理:** `nodes/{my_id}/+/cmd` を一括購読。受領直後に `acknowledged` を返送し、対象ユニットの `control(payload)` を呼び出す。
 
-### [DRV] `node/vst_*.py` (例: vst_camera.py)
-* **役割:** 物理デバイスの制御、および実行状態の報告。基底クラスの `send_response(status)` を必ず実装・利用する。
-* **処理:** `control(payload)` を入口とし、完了時または状態変化時に `completed`, `error`, `idle` などを送信する。
+                  ### [DRV] `node/vst_*.py` (例: vst_camera.py)
+                  * **役割:** 物理デバイスの制御、および実行状態の報告。基底クラスの `send_response(status)` を必ず実装・利用する。
+                  * **処理:** `control(payload)` を入口とし、完了時または状態変化時に `completed`, `error`, `idle` などを送信する。
+
+## 3. コンポーネント別責務 (Component Roles) 段階的移行モデル
+将来の大規模化・分散化・高セキュリティ化に備え、アーキテクチャを段階的に引き上げる。
+
+# * ** 【フェーズ2】イベント駆動の導入（Hubによるコマンド一元管理）
+UIからの直接命令による競合（二重送信）を防ぎ、Hubを指揮者とする構成。
+
+# [UI/API] api/send_cmd.php
+
+* 役割: ユーザー操作をDBに記録し、関連モジュールに「更新の合図」のみを通知する。
+* 処理: INSERT INTO node_commands (val_status='pending', sent_at=NOW())
+* 送信: コマンド本体は送らず、system/hub/kick 宛に空の通知をパブリッシュする。
+
+# [HUB] hub_manager.py (Hub デーモン)
+
+* 役割: キック通知を契機とした完全イベント駆動のコマンドディスパッチ（DB監視ループの廃止）。
+* 処理: system/hub/kick を購読。受信時のみDBから pending を取得し、対象Node（nodes/{sys_id}/{vst_role_name}/cmd）へパブリッシュ。コマンド送信時後、DBを sent に更新。
+
+# [NODE] node/main_manager.py & vst_*.py
+
+* 役割: 制御コマンドのライフサイクル応答と、純粋なデータ（映像・環境値）ストリームの経路を厳格に分離する（0.2KB化け等のノイズ混入の完全排除）。
+* コマンドを受信した直後、実際の処理（ffmpegの起動や停止など）を開始する前に、cmd_status: "acknowledged" をHubに返すメソッドを実行する。
+* 処理が正常終了した場合：従来通り cmd_status: "completed" を返す。
+* 処理中にエラーを捕捉した場合：cmd_status: "failed" を返す。
+
+# DB層 (db_bridge.py)
+
+* 厳密に送られてきたステータス通りに acked_at と completed_at を埋める。
+* エラー時も completed_at に時刻を記録する。
+
+# * ** 【フェーズ3】完全疎結合（DBアクセスの一元化とEvent Sourcing）
+* NodeからDBへの直接アクセス権を剥奪し、セキュリティと耐障害性を最大化する構成。
+
+# [NODE] 各種ノードモジュール
+
+* 役割 (変更): DBへの直接接続を完全廃止。すべての測定データ (env_)、状態変化、ログ、コマンド応答を nodes/.../event や res としてMQTTへ放流（Fire and Forget）するのみとする。
+
+# [HUB/BACKEND] db_writer.py (新規/統合)
+
+* 役割: 全NodeからMQTTに放流される膨大なイベント・レスポンスを購読し、一括してDBへの書き込み（INSERT/UPDATE）を担当する専任デーモン。QoSを活用してデータの欠損を防ぐ。
+
+# Hub Status Engine (status_engine.py) [今後のフェーズ]
+
+* DBを巡回し、長時間 pending, sent, acknowledged で止まっているコマンドをtimeout (エラー扱い) としてクローズし、completed_at に時刻を刻むロジックを追加する。
 
 ---
 
@@ -302,3 +385,27 @@ DB Schema Integrity:
 State Protection Rule:
   DBのステータス更新時、acknowledged は created/sent 状態からのみ移行を許可し、すでに completed や error になっているレコードを上書き（ダウングレード）してはならない。
   SQL例: UPDATE node_commands SET val_status='acknowledged' WHERE id=1203 AND val_status NOT IN ('completed', 'error');
+
+
+  ## WES 2026: コマンド実行および状態遷移規格 (Standard for Command Execution & State Transition)
+
+### 1. コマンド・レスポンス・サイクル
+ノードが Hub から `vst_control` 命令を受信した場合、以下の 3 段階でレスポンスを返さなければならない。
+
+| 段階 | ステータス (val_status) | 役割 |
+| :--- | :--- | :--- |
+| **Step 1: ACK** | `acknowledged` | 命令の物理的受領を報告。メインマネージャーが即座に返却する。 |
+| **Step 2: EXEC** | `starting` / `stopping` | 内部処理（スレッド起動、HW初期化）を開始。DBの現在状態を更新する。 |
+| **Step 3: FINAL** | `completed` / `error` | **動作の成否が確定した時点**で最終報告を行う。 |
+
+### 2. 状態遷移の厳密定義 (node_status_current)
+ユニットの状態遷移は、以下のフローを厳守すること。特に「成功の確証」が得られるまでステータスを `streaming` 等へ移行してはならない。
+
+1.  **Idle**: 待機状態。
+2.  **Starting**: 初期化中。プロセス起動やHWのオープンを試行している期間。
+3.  **Streaming**: 正常稼働中。**「最初のデータパケットが送出された」**ことをもってこの状態に遷移する。
+4.  **Error**: 異常発生。`Starting` 中の失敗、または `Streaming` 中のプロセス停止時に遷移する。
+
+### 3. エラーハンドリング条項
+- 起動コマンド実行時、HWの不在等でプロセスが即死した場合は、コマンドの最終ステータスを `error` (log_code: 500系) として返却しなければならない。
+- `STOP` 命令は、現在の物理状態に関わらず、最終的に必ず `idle` 状態へ着地させ、`completed` を返却しなければならない（二重停止の許容）。

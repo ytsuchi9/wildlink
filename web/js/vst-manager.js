@@ -1,10 +1,11 @@
 /**
- * VstManager: WildLink Event Standard (WES) 2026 司令塔
- * 役割: プラグインの動的ロード、MQTTイベントの解析・分配、およびUIの統合管理
+ * VstManager: WES 2026 対応版
  */
 class VstManager {
-    constructor(nodeId) {
+    // 🌟 groupId を追加。PHP側から渡すか、global変数を参照するようにします。
+    constructor(nodeId, groupId = "home_internal") {
         this.nodeId = nodeId;
+        this.groupId = groupId; // 🌟 追加
         this.units = {}; 
         this.loadedScripts = new Set(); 
         this.mqttClient = null;
@@ -13,20 +14,12 @@ class VstManager {
 
     async init() {
         try {
-            // PHP経由でノードの全ユニット構成を取得
             const res = await fetch(`api/get_node_config.php?sys_id=${this.nodeId}`);
             const configs = await res.json();
 
-            // 1. 各ユニットに必要なJSファイルを並列ロード
             await this.loadRequiredScripts(configs);
-
-            // 2. 物理的なUIラック（枠組み）を生成
             this.renderRack(configs);
-
-            // 3. MQTT接続 (リアルタイム通信の確立)
             this.setupMqtt();
-
-            // 4. 定期ポーリング開始 (MQTT切断時のバックアップ & Vital統計用)
             this.startLoop();
         } catch (e) { 
             console.error("[VstManager] Init Error:", e); 
@@ -35,7 +28,7 @@ class VstManager {
 
     setupMqtt() {
         const brokerHost = window.location.hostname;
-        const brokerPort = 9001; // WebSocket用ポート
+        const brokerPort = 9001; 
         const clientId = `web_${this.nodeId}_${Math.random().toString(16).substr(2, 5)}`;
 
         try {
@@ -57,10 +50,13 @@ class VstManager {
                 timeout: 3,
                 onSuccess: () => {
                     this.isMqttConnected = true;
-                    console.log(`%c[VstManager] MQTT Active: ${this.nodeId}`, "color: #00ff00; font-weight: bold;");
+                    console.log(`%c[VstManager] MQTT Active: ${this.nodeId} (Group: ${this.groupId})`, "color: #00ff00; font-weight: bold;");
                     
-                    // WES 2026標準トピックを購読: nodes/{sys_id}/{role}/{type}
-                    this.mqttClient.subscribe(`nodes/${this.nodeId}/#`);
+                    // 🌟 修正: WES 2026標準トピックを購読
+                    // 形式: wildlink/{groupId}/{nodeId}/#
+                    const topic = `wildlink/${this.groupId}/${this.nodeId}/#`;
+                    this.mqttClient.subscribe(topic);
+                    console.log(`[VstManager] Subscribed to: ${topic}`);
                 },
                 onFailure: (err) => {
                     console.error("[VstManager] MQTT Connection Failed:", err);
@@ -78,29 +74,27 @@ class VstManager {
     }
 
     /**
-     * トピック構造: nodes/{sys_id}/{role}/{type}
-     * type: event (状態変化), env (生データ), status (定期報告)
+     * 🌟 修正: 階層構造の変化に対応
+     * Topic index: 0:wildlink / 1:group / 2:node / 3:role / 4:type
      */
     dispatchMqtt(topic, payload) {
         try {
             const parts = topic.split('/');
-            if (parts.length < 4) return;
+            if (parts.length < 5) return; // wildlink/group/node/role/type なので最低5つ
 
-            const role = parts[2];
-            const type = parts[3];
+            const role = parts[3]; // 🌟 2 から 3 へ変更
+            const type = parts[4]; // 🌟 3 から 4 へ変更
             const data = JSON.parse(payload);
             
-            // データにroleが含まれていない場合は補完
             if (!data.role) data.role = role;
             data.msg_type = type;
 
             const unit = this.units[role];
             if (unit && unit.instance) {
-                // 各ユニットの onEvent または update メソッドへ飛ばす
+                // event タイプかつ onEvent 実装済みならキック
                 if (type === 'event' && typeof unit.instance.onEvent === 'function') {
                     unit.instance.onEvent(data);
                 } else if (typeof unit.instance.update === 'function') {
-                    // env や status は update で処理
                     unit.instance.update(data);
                 }
             }

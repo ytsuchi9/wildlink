@@ -21,11 +21,16 @@ logger = get_logger("hub_manager")
 class WildLinkHubManager:
     """
     WildLink Event Standard (WES) 2026 準拠
-    役割: 全ノードのコマンド配送、ステータス同期、およびイベント中継（UI連携）。
+    役割: 全ノードのコマンド一元配送、ステータス同期、およびイベント中継（UI連携）。
+    
+    【WES 2026: 履歴重視・信頼性設計】
+    - コマンド配送(sent) -> 受領確認(acknowledged) -> 最終決着(completed/error) の遷移を管理。
+    - 正常終了だけでなく、エラーやタイムアウト時も 'completed_at' に時刻を刻み、
+      「いつ処理が打ち切られたか」を明確にします。
     """
     def __init__(self):
         self.db = DBBridge()
-        # MQTTクライアント初期化
+        # MQTTクライアント初期化 (Callback API V1)
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id="wildlink_hub")
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
@@ -38,49 +43,17 @@ class WildLinkHubManager:
         self.running = True
 
     # ---------------------------------------------------------
-    # コマンド配送 (Hub -> Node)
-    # ---------------------------------------------------------
-
-    def command_dispatcher_loop(self):
-        """DBから未送信のコマンドを拾い、各Nodeの /cmd トピックへ配送する"""
-        logger.info("📨 Command Dispatcher Loop active.")
-        while self.running:
-            try:
-                commands = self.db.fetch_pending_commands() 
-                for cmd in commands:
-                    cmd_id = cmd['id']
-                    target_sys = cmd['sys_id'] 
-                    # WES 2026: vst_role_name をトピックに使用
-                    vst_role = cmd.get('vst_role_name') or 'system' 
-                    
-                    topic = f"nodes/{target_sys}/{vst_role}/cmd"
-                    
-                    try:
-                        payload = json.loads(cmd['cmd_json']) if cmd['cmd_json'] else {}
-                    except:
-                        payload = {"raw_payload": cmd['cmd_json']}
-                    
-                    # 応答紐付け用の ID 注入
-                    payload['cmd_id'] = cmd_id
-                    
-                    json_payload = json.dumps(payload, ensure_ascii=False)
-                    logger.info(f"📤 Dispatching [ID:{cmd_id}] to {topic}")
-                    
-                    self.client.publish(topic, json_payload, qos=1)
-                    self.db.update_command_status(cmd_id, "sent")
-                    
-            except Exception as e:
-                logger.error(f"❌ Dispatcher Error: {e}")
-            time.sleep(1)
-
-    # ---------------------------------------------------------
-    # メッセージ受信ハンドラ (Node -> Hub)
+    # メッセージ受信ハンドラ (Hubの耳)
     # ---------------------------------------------------------
 
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             logger.info("🌐 Hub Manager Connected Successfully.")
-            # 全ノードのレスポンスとイベントを購読
+            
+            # UIからのキック（目覚まし）通知を購読
+            client.subscribe("system/hub/kick")
+            
+            # 全ノードのレスポンス(res)とイベント(event)を購読
             client.subscribe("nodes/+/+/res")
             client.subscribe("nodes/+/+/event")
         else:
@@ -88,11 +61,19 @@ class WildLinkHubManager:
 
     def on_message(self, client, userdata, msg):
         """
-        受信メッセージの解析とDB・UIへの振り分け
+        受信メッセージの解析とDB・UI・Nodeへの振り分け
         """
         try:
+            # 1. UIからのキック通知
+            if msg.topic == "system/hub/kick":
+                logger.info("⚡ [HUB] Received kick from UI. Checking pending commands...")
+                self._dispatch_pending_commands()
+                return
+
+            # 2. Nodeからのメッセージ (res / event)
             parts = msg.topic.split('/')
-            if len(parts) < 4: return
+            if len(parts) < 4 or parts[0] != "nodes": 
+                return
             
             sys_id   = parts[1]
             vst_role = parts[2]
@@ -101,25 +82,22 @@ class WildLinkHubManager:
             payload = json.loads(msg.payload.decode())
             if not isinstance(payload, dict): return
 
-            # -------------------------------------------------------------
-            # 1. /res トピック: コマンド結果と物理状態の同期
-            # -------------------------------------------------------------
+            # [res] トピック: コマンド進捗と物理状態の同期
             if msg_type == 'res':
-                cmd_status = payload.get('cmd_status') # acknowledged / completed / failed
+                cmd_status = payload.get('cmd_status') # acknowledged / completed / failed / error
                 val_status = payload.get('val_status') # idle / streaming / error
-                ref_id = payload.get('ref_cmd_id')
+                # Node側からは ref_cmd_id または cmd_id として返ってくることを想定
+                ref_id = payload.get('ref_cmd_id') or payload.get('cmd_id')
 
                 # A. 物理状態の同期 (node_status_currentテーブル)
                 if val_status:
                     self.db.update_node_status(sys_id, vst_role, payload)
 
-                # B. コマンド完了報告の記録 (node_commandsテーブル)
+                # B. コマンド進捗報告の記録 (node_commandsテーブル)
                 if ref_id and cmd_status:
                     self._handle_command_lifecycle(ref_id, cmd_status, payload)
 
-            # -------------------------------------------------------------
-            # 2. /event トピック: ログ記録とUIアクションのトリガー
-            # -------------------------------------------------------------
+            # [event] トピック: ログ記録
             elif msg_type == 'event':
                 event_name = payload.get('event')
                 logger.info(f"📥 [event] {sys_id}:{vst_role} -> {event_name}")
@@ -127,22 +105,68 @@ class WildLinkHubManager:
                 # イベントログをDBに保存
                 self.db.insert_event_log(sys_id, vst_role, payload)
 
-                # 【新規】UI連携: 配信開始イベントをUI制御トピックに中継
-                if event_name == "streaming_started":
+                # UI連携: 特定のイベントをUIに中継
+                if event_name in ["streaming_started", "stream_ready"]:
                     self._kick_ui_panel(sys_id, vst_role, payload)
 
         except Exception as e:
             logger.error(f"❌ Message Handler Error: {e}")
 
     # ---------------------------------------------------------
-    # 内部ロジック
+    # コマンド配送ロジック (Hub -> Node)
+    # ---------------------------------------------------------
+
+    def _dispatch_pending_commands(self):
+        """
+        DBから未送信(pending)のコマンドを拾い、対象Nodeへ配送。
+        """
+        try:
+            commands = self.db.fetch_pending_commands() 
+            if not commands:
+                logger.info("ℹ️ No pending commands found in DB.")
+                return
+
+            for cmd in commands:
+                cmd_id = cmd['id']
+                target_sys = cmd['sys_id'] 
+                vst_role = cmd.get('vst_role_name') or 'system' 
+                
+                topic = f"nodes/{target_sys}/{vst_role}/cmd"
+                
+                try:
+                    payload = json.loads(cmd['cmd_json']) if cmd['cmd_json'] else {}
+                except:
+                    payload = {"raw_payload": cmd['cmd_json']}
+                
+                # 応答紐付け用の ID 注入
+                payload['cmd_id'] = cmd_id
+                json_payload = json.dumps(payload, ensure_ascii=False)
+                
+                logger.info(f"📤 Dispatching [ID:{cmd_id}] to {topic}")
+                
+                # 送信し、即座に DBを 'sent' (sent_at記録) に更新
+                self.client.publish(topic, json_payload, qos=1)
+                self.db.update_command_status(cmd_id, "sent")
+                
+        except Exception as e:
+            logger.error(f"❌ Dispatcher Error: {e}")
+
+    # ---------------------------------------------------------
+    # 内部ロジック (DB更新・UI連携)
     # ---------------------------------------------------------
 
     def _handle_command_lifecycle(self, cmd_id, status, payload):
-        """コマンドの進捗(node_commands)をDBに反映する"""
+        """
+        WES 2026 厳密ステータス管理
+        """
+        # 1. Acknowledged (受領確認)
         if status == "acknowledged":
+            logger.info(f"✅ [ACK] Command {cmd_id} acknowledged by node.")
             self.db.mark_command_acknowledged(cmd_id)
-        elif status == "completed":
+        
+        # 2. Completed (正常終了)
+        elif status == "completed" or status == "success":
+            logger.info(f"🏁 [FIN] Command {cmd_id} completed successfully.")
             self.db.finalize_command(
                 cmd_id=cmd_id,
                 status="completed",
@@ -150,31 +174,32 @@ class WildLinkHubManager:
                 log_code=payload.get('log_code', 200),
                 res_payload=payload
             )
-        elif status == "failed":
+        
+        # 3. Failed / Error (異常終了)
+        elif status in ["failed", "error"]:
+            logger.error(f"⚠️ [ERR] Command {cmd_id} failed reported by node.")
+            # WES 2026 では、エラー時も finalized として時刻(completed_at)を刻む
             self.db.finalize_command(
                 cmd_id=cmd_id,
                 status="error",
-                log_msg=payload.get('log_msg', 'Failed'),
+                log_msg=payload.get('log_msg', 'Failed/Error reported'),
                 log_code=payload.get('log_code', 500),
                 res_payload=payload
             )
 
     def _kick_ui_panel(self, sys_id, vst_role, payload):
-        """
-        [UI連携] 配信開始を検知した際、ブラウザUIに対してパネルを開くようMQTTで指示。
-        """
+        """[UI連携] パネル表示指示"""
         ui_cmd = {
             "action": "open_panel",
             "target_role": vst_role,
             "net_port": payload.get("net_port"),
             "timestamp": time.time()
         }
-        # ブラウザが購読しているトピック（仮: gui/control）へパブリッシュ
         self.client.publish("gui/control", json.dumps(ui_cmd))
         logger.info(f"🚀 UI Kick sent: Open panel for {vst_role}")
 
     # ---------------------------------------------------------
-    # サブプロセス管理・実行
+    # サブプロセス管理
     # ---------------------------------------------------------
 
     def _spawn_process(self, name):
@@ -211,8 +236,7 @@ class WildLinkHubManager:
             return
 
         self.client.loop_start()
-        threading.Thread(target=self.command_dispatcher_loop, daemon=True).start()
-
+        
         logger.info(f"📡 Hub Manager Running. System ID: {os.getenv('SYS_ID', 'hub_001')}")
         
         try:
