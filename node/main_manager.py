@@ -24,6 +24,8 @@ from common.logger_config import get_logger
 from common import config_loader
 
 logger = get_logger("main_manager")
+MQTT_PREFIX = getattr(config_loader, 'MQTT_PREFIX', 'wildlink')
+GROUP_ID    = getattr(config_loader, 'GROUP_ID', 'home_internal')
 
 class MainManager:
     """
@@ -63,7 +65,7 @@ class MainManager:
         self.mqtt.set_on_command_callback(self.on_mqtt_command)
 
         if self.mqtt.connect():
-            # 自ノード宛の全役割コマンドを購読 (nodes/{sys_id}/+/cmd)
+            # 自ノード宛の全役割コマンドを購読 ({MQTT_PREFIX}/{GROUP_ID}/{sys_id}/+/cmd)
             self.mqtt.subscribe_commands(self.sys_id)
             logger.info(f"📡 MQTT Connected for {self.sys_id}")
 
@@ -116,7 +118,7 @@ class MainManager:
         
         # MQTTでHubに通知
         msg_type = "res" if event_type in ["result", "completed", "failed"] else "event"
-        pub_topic = f"nodes/{self.sys_id}/{source_role}/{msg_type}"
+        pub_topic = f"{MQTT_PREFIX}/{GROUP_ID}/{self.sys_id}/{source_role}/{msg_type}"
         self.mqtt.publish(pub_topic, json.dumps(payload))
 
         # 連動設定の実行
@@ -217,6 +219,13 @@ class MainManager:
             importlib.reload(module)
             vst_class = getattr(module, f"VST_{vst_class_name}")
 
+            # 🌟 修正: 新しいインスタンスを作る【前】に、古いユニットを完全に停止（cleanup）させる
+            if role in self.units:
+                logger.info(f"🔄 Replacing old unit: {role}")
+                self.units[role].stop()
+                time.sleep(0.1) # ハードウェア解放のための微小な猶予
+
+            # その後で新しいインスタンスを生成する
             instance = vst_class(
                 sys_id=self.sys_id,
                 role=role,
@@ -225,7 +234,6 @@ class MainManager:
                 event_callback=self.on_vst_event
             )
             
-            if role in self.units: self.units[role].stop()
             self.units[role] = instance
             logger.info(f"✅ Unit Activated: {role} ({vst_class_name}) @ HUB:{self.hub_ip}")
             

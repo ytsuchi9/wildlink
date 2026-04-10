@@ -55,6 +55,7 @@ class VstManager {
                     // 🌟 修正: WES 2026標準トピックを購読
                     // 形式: wildlink/{groupId}/{nodeId}/#
                     const topic = `wildlink/${this.groupId}/${this.nodeId}/#`;
+                    //const topic = `wildlink/${this.groupId}/${this.nodeId}/#`;
                     this.mqttClient.subscribe(topic);
                     console.log(`[VstManager] Subscribed to: ${topic}`);
                 },

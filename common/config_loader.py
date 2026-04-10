@@ -12,6 +12,11 @@ logger = get_logger("config_loader")
 # 優先順位: OS環境変数 > .env > デフォルト
 SYS_ID = os.getenv("SYS_ID") or os.getenv("NODE_ID") or "node_001"
 MQTT_BROKER = os.getenv("MQTT_BROKER") or "localhost"
+# .env等から読み込む。設定がなければ "wildlink" をデフォルトにする
+MQTT_PREFIX = os.getenv("MQTT_PREFIX", "wildlink")
+GROUP_ID    = os.getenv("GROUP_ID", "home_internal")
+
+# getattr(config_loader, 'GROUP_ID', 'home_internal')
 
 # --- [WES 2026 追加項目] ---
 # Hub（映像/データ受信側）のIPアドレス。動画配信の宛先として必須。

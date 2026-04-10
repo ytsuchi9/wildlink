@@ -1,5 +1,20 @@
 import paho.mqtt.client as mqtt
+import os
+import sys
 import json
+
+# 🌟 どんな環境からも config_loader を確実に見つける魔法の3行
+try:
+    from common import config_loader
+except ImportError:
+    # 自身が common フォルダ内で実行された、あるいはパスが通っていない場合
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    if current_dir not in sys.path:
+        sys.path.insert(0, current_dir)
+    import config_loader
+
+MQTT_PREFIX = getattr(config_loader, 'MQTT_PREFIX', 'wildlink')
+GROUP_ID    = getattr(config_loader, 'GROUP_ID', 'home_internal')
 
 class MQTTClient:
     def __init__(self, broker_address, client_id):
@@ -36,16 +51,16 @@ class MQTTClient:
     def _on_message(self, client, userdata, msg):
         """
         WES 2026 準拠: 受信したトピックから Role を抽出してディスパッチする
-        Topic: nodes/{sys_id}/{role}/cmd
+        Topic: {MQTT_PREFIX}/{GROUP_ID}/{sys_id}/{role}/cmd
         """
         try:
             # トピックを分割して role を特定 (3番目の要素)
-            # 例: "nodes/node_001/log_sys/cmd" -> ["nodes", "node_001", "log_sys", "cmd"]
+            # 例: "wildlink/node_001/log_sys/cmd" -> ["wildlink", "node_001", "log_sys", "cmd"]
             parts = msg.topic.split('/')
             if len(parts) < 4:
                 return # 構造が違う場合は無視
 
-            role = parts[2] 
+            role = parts[3] 
             payload = json.loads(msg.payload.decode('utf-8'))
 
             print(f"[MQTT] Received command for Role: {role}")
@@ -71,18 +86,18 @@ class MQTTClient:
         """
         WES 2026 準拠: 自分のノード宛の全役割のコマンドを一括購読
         """
-        topic = f"nodes/{sys_id}/+/cmd"
+        topic = f"{MQTT_PREFIX}/{GROUP_ID}/{sys_id}/+/cmd"
         self.client.subscribe(topic)
         print(f"[MQTT] Subscribed to {topic}")
 
     def publish_event(self, sys_id, role, data):
         """WES 2026 準拠: イベントトピックへ送信 (Node -> Server/Browser)"""
-        topic = f"nodes/{sys_id}/{role}/event"
+        topic = f"{MQTT_PREFIX}/{GROUP_ID}/{sys_id}/{role}/event"
         return self.publish(topic, data)
 
     def publish_env(self, sys_id, role, data):
         """WES 2026 準拠: 環境データトピックへ送信 (Node -> DB)"""
-        topic = f"nodes/{sys_id}/{role}/env"
+        topic = f"{MQTT_PREFIX}/{GROUP_ID}/{sys_id}/{role}/env"
         return self.publish(topic, data)
 
     def publish_res(self, sys_id, role, cmd_id, cmd_status, val_status="acknowledged", log_msg=""):
@@ -90,7 +105,7 @@ class MQTTClient:
         WES 2026 準拠: コマンドに対する応答 (ACK/結果) を送信する
         Hub側の `acked_at` や `completed_at` を更新させるための必須メソッド
         """
-        topic = f"nodes/{sys_id}/{role}/res"
+        topic = f"{MQTT_PREFIX}/{GROUP_ID}/{sys_id}/{role}/res"
         data = {
             "ref_cmd_id": cmd_id,
             "cmd_status": cmd_status,  # "acknowledged" か "completed" を期待

@@ -4,7 +4,7 @@
 
 ## 1. 共通設計ルール (The Core Rules)
 
-              * **トピック構造:** `nodes/{sys_id}/{vst_role_name}/{type}`
+              * **トピック構造:** `wildlink/{sys_id}/{vst_role_name}/{type}`
                 * `type`: `cmd` (命令), `res` (応答), `event` (状態/計測)
               * **動的デバイス命名 (Role-based Naming):** * ハードウェアの接続インターフェース名（例: `pi`, `usb`）はシステム管理に依存させず、役割名である `vst_role_name` (`cam_main`, `cam_sub`, `cam_rear` など) を使用して抽象化と動的切り替えを実現する。
               * **命名規則の規格化:**
@@ -20,9 +20,9 @@
 
 # トピック構造とルーティング:
 
-* アプリ層（不変）: nodes/{sys_id}/{vst_role_name}/{type} (type: cmd, res, event)
+* アプリ層（不変）: wildlink/{sys_id}/{vst_role_name}/{type} (type: cmd, res, event)
 
-* インフラ層（拡張）: エッジとクラウド等ネットワークが分かれる場合、コード上のトピック階層は変更せず、mosquitto.conf のブリッジ機能 (topic nodes/# both 1 "" {SYS_GROUP}/ 等) を用いて、ブローカー間で自律的に配信範囲を制御する。
+* インフラ層（拡張）: エッジとクラウド等ネットワークが分かれる場合、コード上のトピック階層は変更せず、mosquitto.conf のブリッジ機能 (topic wildlink/# both 1 "" {SYS_GROUP}/ 等) を用いて、ブローカー間で自律的に配信範囲を制御する。
 
 # 動的デバイス命名 (Role-based Naming):
 * ハードウェアの接続インターフェース名（例: pi, usb）はシステム管理に依存させず、役割名である vst_role_name (cam_main, cam_sub, cam_rear など) を使用して抽象化と動的切り替えを実現する。
@@ -75,7 +75,7 @@
                   ### [UI/API] `api/send_cmd.php`
                   * **役割:** ユーザー操作をDBに記録し、MQTTでNodeへ初動命令を飛ばす。
                   * **処理:** `INSERT INTO node_commands` (`val_status='sent'`, `sent_at=NOW()`)
-                  * **送信:** `nodes/{sys_id}/{vst_role_name}/cmd` 宛に JSON (`{"cmd_id": ID, "act_run": true}`) をパブリッシュ。
+                  * **送信:** `wildlink/{sys_id}/{vst_role_name}/cmd` 宛に JSON (`{"cmd_id": ID, "act_run": true}`) をパブリッシュ。
 
                   ### [HUB] Hub デーモン
                   Hub側は機能ごとにデーモンを分割し、明確に役割を分担する。
@@ -84,7 +84,7 @@
 
                   ### [NODE] `node/main_manager.py`
                   * **役割:** 自身の `sys_id` 宛の命令を受信し、適切な `VstUnit` へ分配する。
-                  * **処理:** `nodes/{my_id}/+/cmd` を一括購読。受領直後に `acknowledged` を返送し、対象ユニットの `control(payload)` を呼び出す。
+                  * **処理:** `wildlink/{my_id}/+/cmd` を一括購読。受領直後に `acknowledged` を返送し、対象ユニットの `control(payload)` を呼び出す。
 
                   ### [DRV] `node/vst_*.py` (例: vst_camera.py)
                   * **役割:** 物理デバイスの制御、および実行状態の報告。基底クラスの `send_response(status)` を必ず実装・利用する。
@@ -105,7 +105,7 @@ UIからの直接命令による競合（二重送信）を防ぎ、Hubを指揮
 # [HUB] hub_manager.py (Hub デーモン)
 
 * 役割: キック通知を契機とした完全イベント駆動のコマンドディスパッチ（DB監視ループの廃止）。
-* 処理: system/hub/kick を購読。受信時のみDBから pending を取得し、対象Node（nodes/{sys_id}/{vst_role_name}/cmd）へパブリッシュ。コマンド送信時後、DBを sent に更新。
+* 処理: system/hub/kick を購読。受信時のみDBから pending を取得し、対象Node（wildlink/{sys_id}/{vst_role_name}/cmd）へパブリッシュ。コマンド送信時後、DBを sent に更新。
 
 # [NODE] node/main_manager.py & vst_*.py
 
@@ -124,7 +124,7 @@ UIからの直接命令による競合（二重送信）を防ぎ、Hubを指揮
 
 # [NODE] 各種ノードモジュール
 
-* 役割 (変更): DBへの直接接続を完全廃止。すべての測定データ (env_)、状態変化、ログ、コマンド応答を nodes/.../event や res としてMQTTへ放流（Fire and Forget）するのみとする。
+* 役割 (変更): DBへの直接接続を完全廃止。すべての測定データ (env_)、状態変化、ログ、コマンド応答を wildlink/.../event や res としてMQTTへ放流（Fire and Forget）するのみとする。
 
 # [HUB/BACKEND] db_writer.py (新規/統合)
 

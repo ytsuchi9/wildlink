@@ -9,14 +9,22 @@ from datetime import datetime
 
 # --- パス解決 ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
-wildlink_root = os.path.dirname(current_dir)
+wildlink_root = os.path.dirname(current_dir) # プロジェクトのルート (wildlink/)
+
+# ルートディレクトリをパスに追加（既にメインマネージャー等で採用している方式）
+if wildlink_root not in sys.path:
+    sys.path.insert(0, wildlink_root)
 common_path = os.path.join(wildlink_root, "common")
 sys.path.append(common_path)
 
+# --- WildLink 共通モジュールのインポート ---
+from common import config_loader  # 🌟 これを追加！
 from db_bridge import DBBridge
 from logger_config import get_logger
 
 logger = get_logger("hub_manager")
+MQTT_PREFIX = getattr(config_loader, 'MQTT_PREFIX', 'wildlink')
+GROUP_ID    = getattr(config_loader, 'GROUP_ID', 'home_internal')
 
 class WildLinkHubManager:
     """
@@ -54,8 +62,8 @@ class WildLinkHubManager:
             client.subscribe("system/hub/kick")
             
             # 全ノードのレスポンス(res)とイベント(event)を購読
-            client.subscribe("nodes/+/+/res")
-            client.subscribe("nodes/+/+/event")
+            client.subscribe(f"{MQTT_PREFIX}/{GROUP_ID}/+/+/res")
+            client.subscribe(f"{MQTT_PREFIX}/{GROUP_ID}/+/+/event")
         else:
             logger.error(f"❌ Connection failed with code {rc}")
 
@@ -72,12 +80,12 @@ class WildLinkHubManager:
 
             # 2. Nodeからのメッセージ (res / event)
             parts = msg.topic.split('/')
-            if len(parts) < 4 or parts[0] != "nodes": 
+            if len(parts) < 5 or parts[0] != "nodes": 
                 return
             
-            sys_id   = parts[1]
-            vst_role = parts[2]
-            msg_type = parts[3] # res, event
+            sys_id   = parts[2]
+            vst_role = parts[3]
+            msg_type = parts[4] # res, event
 
             payload = json.loads(msg.payload.decode())
             if not isinstance(payload, dict): return
@@ -131,7 +139,7 @@ class WildLinkHubManager:
                 target_sys = cmd['sys_id'] 
                 vst_role = cmd.get('vst_role_name') or 'system' 
                 
-                topic = f"nodes/{target_sys}/{vst_role}/cmd"
+                topic = f"{MQTT_PREFIX}/{GROUP_ID}/{target_sys}/{vst_role}/cmd"
                 
                 try:
                     payload = json.loads(cmd['cmd_json']) if cmd['cmd_json'] else {}

@@ -69,7 +69,7 @@ class VST_Logger(WildLinkVSTBase):
                 "sys_uptime": self._get_uptime() # ついでに稼働時間も入れるなどの拡張が可能
             }
             
-            # 基底クラスのメソッドを使用して nodes/{sys_id}/{role}/env へ送信
+            # 基底クラスのメソッドを使用して {MQTT_PREFIX}/{GROUP_ID}/{sys_id}/{role}/env へ送信
             self.send_data(log_data)
             
             self.log_code = 200

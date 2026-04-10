@@ -54,7 +54,7 @@ try {
     $cmd_id = $pdo->lastInsertId();
 
     // 4. MQTTでHubへ「キック(合図)」を送信する
-    // 🌟【修正ポイント】: 直接Node宛のトピック(nodes/...)には送らず、
+    // 🌟【修正ポイント】: 直接Node宛のトピック(wildlink/...)には送らず、
     // Hubの目覚まし用トピック(system/hub/kick)に通知だけを送る。
     $kick_topic = "system/hub/kick";
     $kick_payload = json_encode([

@@ -10,22 +10,31 @@ from dotenv import load_dotenv
 
 # --- 1. パス解決と初期設定 ---
 current_dir = os.path.dirname(os.path.abspath(__file__)) 
-wildlink_root = os.path.dirname(current_dir)
-common_path = os.path.join(wildlink_root, "common")
-if common_path not in sys.path:
-    sys.path.append(common_path)
+wildlink_root = os.path.abspath(os.path.join(current_dir, ".."))
 
-from wmp_core import WMPHeader
-from db_bridge import DBBridge
-from logger_config import get_logger
+if wildlink_root not in sys.path:
+    sys.path.insert(0, wildlink_root)
+
+# 🌟 統一されたインポート
+from common.mqtt_client import MQTTClient
+from common.db_bridge import DBBridge
+from common.logger_config import get_logger
+from common import config_loader  # これを追加
+
+# hub/wmp_core.py から WMPHeader を読み込む
+try:
+    from hub.wmp_core import WMPHeader
+except ImportError:
+    # 万が一 hub フォルダとして認識されていない場合の保険
+    from wmp_core import WMPHeader
 
 logger = get_logger("stream_rx")
-load_dotenv(os.path.join(wildlink_root, ".env"))
 
-# 🌟 .env からの動的読み込み
-GROUP_ID   = os.getenv("GROUP_ID", "default_group")
-HUB_ID     = os.getenv("HUB_ID", "hub_001")
-MJPEG_PORT = int(os.getenv("MJPEG_PORT", "8080"))
+# 🌟 .env 直叩きではなく config_loader 経由に統一
+MQTT_PREFIX = getattr(config_loader, 'MQTT_PREFIX', 'wildlink')
+GROUP_ID    = getattr(config_loader, 'GROUP_ID', 'home_internal')
+HUB_ID      = getattr(config_loader, 'SYS_ID', 'hub_001') # ハブ自身のID
+MJPEG_PORT  = int(os.getenv("MJPEG_PORT", "8080"))
 
 app = Flask(__name__)
 
@@ -100,14 +109,24 @@ class StreamStore:
                 self.publish_wes_event(sys_id, role, "stream_ready", {"net_port": port})
 
     def publish_wes_event(self, sys_id, role, event_name, extra=None):
-        """WES 2026 準拠トピック"""
+        """WES 2026 準拠トピックへ動的にパブリッシュ"""
         payload = {
             "event": event_name,
             "time": int(time.time()),
             "sender": HUB_ID
         }
         if extra: payload.update(extra)
-        topic = f"wildlink/{GROUP_ID}/{sys_id}/{role}/event"
+
+        # 🌟 修正ポイント: 
+        # 1. "wildlink" を MQTT_PREFIX に変更
+        # 2. 階層を status_engine 等と合わせる (GROUP_ID を抜くか、全体で入れるか統一)
+        
+        # もし status_engine.py と合わせるなら 4階層 にします
+        #topic = f"{MQTT_PREFIX}/{sys_id}/{role}/event"
+        
+        # もし「場所(home_internal)」という階層を維持したい場合は以下
+        topic = f"{MQTT_PREFIX}/{GROUP_ID}/{sys_id}/{role}/event"
+
         self.mqtt_client.publish(topic, json.dumps(payload))
 
     def get_frame(self, port, timeout=3.0):
