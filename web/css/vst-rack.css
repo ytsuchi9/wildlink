@@ -93,3 +93,120 @@ h1 small { color: var(--accent-blue); font-size: 0.8rem; }
 /* Controls */
 .vst-controls { margin-top: 10px; }
 .btn-group .btn { border-radius: 0; }
+
+
+/* --- 人感センサー 追加分 web/js/plugins/motion-unit.js --- */
+
+/* ラックユニット全体の共通定義 */
+.vst-rack-unit {
+    background: #1a1a1a;
+    border-radius: 2px;
+}
+
+/* ユニットが無効な時の表現 */
+/* 以前の grayscale ではなく、背景を少し暗くし、枠線を暗くする程度に留める */
+.vst-plugin.unit-disabled {
+    opacity: 1; /* 明るさは維持 */
+    background: #141414;
+    border-left-color: #333 !important;
+}
+
+.unit-disabled .rack-side-display {
+    background: #000;
+    border-color: #222;
+}
+
+/* 設定パネル内のスイッチや入力項目をより「機器」っぽく */
+.form-switch .form-check-input {
+    cursor: pointer;
+}
+
+.form-switch .form-check-input:checked {
+    background-color: var(--accent-green);
+    border-color: var(--accent-green);
+}
+
+/* APPLYボタンの「PUSH感」 */
+.btn-primary {
+    border: none;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 2px 4px rgba(0,0,0,0.5);
+}
+
+.btn-primary:active {
+    transform: translateY(1px);
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+}
+
+
+
+/* 検知時のボーダー強調 */
+.vst-plugin.u-error {
+    border-left: 6px solid var(--accent-red) !important;
+    box-shadow: 0 0 15px rgba(220, 53, 69, 0.4);
+    background: rgba(220, 53, 69, 0.05);
+}
+
+/* 点滅アニメーション */
+.vst-blink {
+    animation: blink-red 0.8s infinite;
+}
+
+@keyframes blink-red {
+    0% { opacity: 1; }
+    50% { opacity: 0.3; }
+    100% { opacity: 1; }
+}
+@keyframes blinker {
+    50% { opacity: 0.2; }
+}
+
+/* 小さいボタン用の微調整 */
+.btn-xs {
+    padding: 1px 5px;
+    font-size: 0.7rem;
+}
+
+/* 無効化時のスタイル（既存の unit-disabled を強化） */
+/* ユニット無効時の透過度調整（ご要望通り明るめに） */
+.unit-disabled {
+    opacity: 0.9 !important;
+    border-left-color: #444 !important;
+}
+.unit-disabled .settings-panel {
+    filter: none; /* 設定パネルは操作しやすく */
+}
+
+
+
+/* ステータスLED */
+.status-led {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1px solid #000;
+}
+.led-on {
+    background-color: #00ff00;
+    box-shadow: 0 0 5px #00ff00;
+}
+.led-off {
+    background-color: #330000;
+}
+
+/* ラック内のパラメータ行 */
+.rack-param-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.6rem;
+    color: #888;
+    padding: 2px 4px;
+    background: #1a1a1a;
+    border-radius: 2px;
+}
+
+/* 表示エリアの質感 */
+.rack-display {
+    transition: background 0.5s ease;
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
+}

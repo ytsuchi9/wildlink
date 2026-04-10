@@ -24,15 +24,22 @@ class VST_Motion(WildLinkVSTBase):
         logger.info(f"🏃 [{self.role}] Initialized on GPIO {self.hw_pin} (Interval: {self.val_interval}s)")
     
     def poll(self):
+        # 🌟 実行中に DB 設定が変更された場合に備え、
+        # 必要に応じて self.params を再読み込みするロジックを検討
+        # 現状は起動時に取得した val_interval を使用
         is_high = (GPIO.input(self.hw_pin) == GPIO.HIGH)
         now = time.time()
 
         if is_high:
-            if (now - self.env_last_detect_time) > self.val_interval:
-                logger.info(f"🔔 [{self.role}] Motion Detected! (Pin {self.hw_pin} is HIGH)")
+            # 検知中の場合はインターバルを無視して「検知中」を維持する
+            if self.val_status != "detected":
+                logger.info(f"🔔 [{self.role}] Motion Detected!")
                 self.on_detect()
-                self.env_last_detect_time = now
+            
+            # 最終検知時刻は常に更新
+            self.env_last_detect_time = now
         else:
+            # 信号が LOW になり、かつ設定されたインターバル（秒）が経過したら idle に戻す
             if self.val_status == "detected" and (now - self.env_last_detect_time) > self.val_interval:
                 self.on_idle_reset()
 
@@ -44,6 +51,36 @@ class VST_Motion(WildLinkVSTBase):
         # 2. Manager経由でMQTT(event)をブロードキャスト（WES2026準拠）
         iso_time = datetime.now().isoformat()
         self.send_event("motion_detected", {"env_last_detect": iso_time})
+
+    def execute_logic(self, data):
+        """
+        vst_base/main_manager からコマンドを受信した際に呼ばれる実処理
+        """
+        try:
+            # 1. パッチ適用
+            if "val_enabled" in data:
+                self.val_enabled = (int(data["val_enabled"]) == 1)
+            if "val_interval" in data:
+                self.val_interval = float(data["val_interval"])
+            if "act_rec" in data:
+                self.act_rec = (int(data["act_rec"]) == 1)
+                
+            logger.info(f"⚙️ [{self.role}] Configuration patched: {data}")
+
+            # 2. 現在のステータスを Hub に同期 (node_status_current の更新を促す)
+            # 現在の val_status を維持したまま、設定が更新されたことを通知します
+            self.update_status(val_status=self.val_status, log_code=200, log_msg="Config applied")
+
+            # 3. main_manager へ完了を委譲
+            # dict を return することで、main_manager がこれを 'completed' として Hub に返してくれます
+            return {
+                "cmd_status": "completed", 
+                "log_msg": "Configuration updated successfully"
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error in execute_logic: {e}")
+            return False  # エラー時は False を返して failed 扱いにさせる
 
     def on_idle_reset(self):
         # 🌟 DBステータスを戻し、イベント通知

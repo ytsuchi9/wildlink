@@ -80,7 +80,7 @@ class WildLinkHubManager:
 
             # 2. Nodeからのメッセージ (res / event)
             parts = msg.topic.split('/')
-            if len(parts) < 5 or parts[0] != "nodes": 
+            if len(parts) < 5 or parts[0] != MQTT_PREFIX: 
                 return
             
             sys_id   = parts[2]

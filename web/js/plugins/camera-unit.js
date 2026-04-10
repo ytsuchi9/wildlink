@@ -1,11 +1,12 @@
 /**
  * CameraUnit: WES 2026 Pro-Reactive Edition
  */
-class CameraUnit {
+// 🌟 継承するように変更
+class CameraUnit extends VstUnitBase {
     constructor(conf, manager) {
-        this.conf = conf;
-        this.manager = manager;
-        this.name = conf.vst_role_name; 
+        // 🌟 親クラスのコンストラクタを呼ぶ
+        super(conf, manager);
+        this.name = conf.vst_role_name;
         
         const params = conf.val_params || {};
         // Hub設定: .env や DB から渡されることを想定

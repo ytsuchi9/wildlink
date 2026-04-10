@@ -3,9 +3,21 @@
  */
 class VstManager {
     // 🌟 groupId を追加。PHP側から渡すか、global変数を参照するようにします。
-    constructor(nodeId, groupId = "home_internal") {
+    // 🌟 prefix を引数に追加し、デフォルト値を設定
+    
+    // 🌟 プラグインを保持するための静的な保管場所
+    static plugins = {};
+
+    // 🌟 プラグインを登録するためのメソッド（これが足りなかった！）
+    static registerPlugin(roleType, pluginClass) {
+        this.plugins[roleType.toLowerCase()] = pluginClass;
+        console.log(`[VstManager] Plugin registered: ${roleType}`);
+    }
+
+    constructor(nodeId, groupId = "home_internal", prefix = "wildlink") {
         this.nodeId = nodeId;
-        this.groupId = groupId; // 🌟 追加
+        this.groupId = groupId;
+        this.prefix = prefix; // 🌟 追加
         this.units = {}; 
         this.loadedScripts = new Set(); 
         this.mqttClient = null;
@@ -50,14 +62,12 @@ class VstManager {
                 timeout: 3,
                 onSuccess: () => {
                     this.isMqttConnected = true;
-                    console.log(`%c[VstManager] MQTT Active: ${this.nodeId} (Group: ${this.groupId})`, "color: #00ff00; font-weight: bold;");
-                    
+                
                     // 🌟 修正: WES 2026標準トピックを購読
-                    // 形式: wildlink/{groupId}/{nodeId}/#
-                    const topic = `wildlink/${this.groupId}/${this.nodeId}/#`;
-                    //const topic = `wildlink/${this.groupId}/${this.nodeId}/#`;
+                    // 🌟 ハードコードを排除し、動的なトピックを生成
+                    const topic = `${this.prefix}/${this.groupId}/${this.nodeId}/#`;
                     this.mqttClient.subscribe(topic);
-                    console.log(`[VstManager] Subscribed to: ${topic}`);
+                    console.log(`%c[VstManager] MQTT Active: ${topic}`, "color: #00ff00; font-weight: bold;");
                 },
                 onFailure: (err) => {
                     console.error("[VstManager] MQTT Connection Failed:", err);
@@ -81,18 +91,35 @@ class VstManager {
     dispatchMqtt(topic, payload) {
         try {
             const parts = topic.split('/');
-            if (parts.length < 5) return; // wildlink/group/node/role/type なので最低5つ
+            if (parts.length < 5) return;
 
-            const role = parts[3]; // 🌟 2 から 3 へ変更
-            const type = parts[4]; // 🌟 3 から 4 へ変更
-            const data = JSON.parse(payload);
+            const role = parts[3];
+            const type = parts[4];
             
-            if (!data.role) data.role = role;
+            // --- 💡 超堅牢なJSON解析 ---
+            let data = payload;
+            // payloadが文字列である限り、パースし続ける（二重シリアライズ対策）
+            while (typeof data === 'string') {
+                try {
+                    data = JSON.parse(data);
+                } catch (e) {
+                    // JSONではない文字列（またはパース失敗）ならループを抜ける
+                    break; 
+                }
+            }
+
+            // dataがオブジェクトでなければ配送不能として終了
+            if (!data || typeof data !== 'object') {
+                console.warn("[VstManager] Invalid data format:", data);
+                return;
+            }
+
+            // 🌟 ここで確実にオブジェクトに対してプロパティをセット
+            data.role = role;
             data.msg_type = type;
 
             const unit = this.units[role];
             if (unit && unit.instance) {
-                // event タイプかつ onEvent 実装済みならキック
                 if (type === 'event' && typeof unit.instance.onEvent === 'function') {
                     unit.instance.onEvent(data);
                 } else if (typeof unit.instance.update === 'function') {
@@ -100,7 +127,7 @@ class VstManager {
                 }
             }
         } catch (e) {
-            console.warn("[VstManager] Dispatch error:", e, topic, payload);
+            console.error("[VstManager] Dispatch critical error:", e);
         }
     }
 
@@ -127,21 +154,31 @@ class VstManager {
         });
     }
 
+    /**
+     * データベースの設定に基づき、ラックにユニットを配置・初期化する
+     * @param {Array} configs - api/get_node_config.php から取得した設定配列
+     */
     renderRack(configs) {
         const rack = document.getElementById('vst-rack');
         if (!rack) return;
-        rack.innerHTML = '';
+        rack.innerHTML = ''; // 既存の表示をクリア
 
         configs.forEach(conf => {
+            // 1. 無効なユニット（is_active=0）はスキップ
             if (parseInt(conf.is_active) === 0) return;
 
-            const role = conf.vst_role_name;
+            const role = conf.vst_role_name; // 'cam_main', 'sns_move' など
+            const vstClass = conf.vst_class.toLowerCase(); // 'camera', 'system' など
+            
+            // 2. ユニットの外装（DOMエレメント）を作成
             const div = document.createElement('div');
             div.id = `plugin-${role}`;
             
+            // 有効・無効（val_enabled）に応じてCSSクラスを付与
             const isEnabled = (parseInt(conf.val_enabled) === 1);
             div.className = `vst-plugin ${isEnabled ? '' : 'unit-disabled'}`;
             
+            // 共通のHTML構造を流し込む
             div.innerHTML = `
                 <div class="plugin-header">
                     <span class="badge-class">${conf.vst_class.toUpperCase()}</span>
@@ -154,14 +191,34 @@ class VstManager {
             `;
             rack.appendChild(div);
 
-            // インスタンス化 (例: logger -> LoggerUnit)
-            const className = conf.vst_class.charAt(0).toUpperCase() + conf.vst_class.slice(1).toLowerCase() + "Unit";
-            const TargetClass = window[className];
+            // 3. プログラム（クラス）の特定
+            // [優先順位1] VstManager.registerPlugin で登録されたクラス
+            let TargetClass = VstManager.plugins[vstClass];
+            
+            // [優先順位2] 登録がない場合、命名規則（例: CameraUnit）から window オブジェクト内を探す
+            if (!TargetClass) {
+                const className = conf.vst_class.charAt(0).toUpperCase() + conf.vst_class.slice(1).toLowerCase() + "Unit";
+                TargetClass = window[className];
+            }
 
+            // 4. インスタンス化と初期化
             if (typeof TargetClass === 'function') {
+                // クラスから実体（インスタンス）を作成し、設定値とマネージャー自身(this)を渡す
                 const instance = new TargetClass(conf, this);
-                this.units[role] = { el: div, config: conf, instance: instance };
-                if (instance.initUI) instance.initUI();
+                
+                // マネージャー内で管理するために保持
+                this.units[role] = { 
+                    el: div, 
+                    config: conf, 
+                    instance: instance 
+                };
+
+                // ユニット固有のUI初期化（ボタンのイベント登録など）を実行
+                if (typeof instance.initUI === 'function') {
+                    instance.initUI();
+                }
+            } else {
+                console.warn(`[VstManager] 対応するプログラムが見つかりません: ${vstClass}`);
             }
         });
     }

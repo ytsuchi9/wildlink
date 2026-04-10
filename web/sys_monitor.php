@@ -123,7 +123,7 @@
 
                 const cardHtml = `
                     <div class="col-xl-3 col-md-4 col-sm-6 mb-4">
-                        <a href="camviewer.html?sys_id=${node.sys_id}" class="card card-node p-3 h-100">
+                        <a href="camviewer.php?sys_id=${node.sys_id}" class="card card-node p-3 h-100">
                             <div class="d-flex justify-content-between align-items-start mb-2">
                                 <div>
                                     <div class="vital-label">Node Identifier</div>
