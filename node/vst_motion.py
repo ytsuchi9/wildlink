@@ -67,20 +67,31 @@ class VST_Motion(WildLinkVSTBase):
                 
             logger.info(f"⚙️ [{self.role}] Configuration patched: {data}")
 
-            # 2. 現在のステータスを Hub に同期 (node_status_current の更新を促す)
-            # 現在の val_status を維持したまま、設定が更新されたことを通知します
-            self.update_status(val_status=self.val_status, log_code=200, log_msg="Config applied")
+            # 2. ステータス更新
+            self.update_status(val_status=self.val_status, log_code=200)
 
-            # 3. main_manager へ完了を委譲
-            # dict を return することで、main_manager がこれを 'completed' として Hub に返してくれます
-            return {
-                "cmd_status": "completed", 
-                "log_msg": "Configuration updated successfully"
+            # 3. 完了報告
+            # 🌟 ポイント：'val_res_payload' を直接渡さず、'log_ext' の中に入れます
+            res_payload = {
+                "val_enabled": 1 if self.val_enabled else 0,
+                "val_interval": self.val_interval,
+                "act_rec": 1 if self.act_rec else 0
             }
+            
+            self.send_response(
+                "completed", 
+                log_msg="Configuration updated successfully",
+                log_code=200,
+                log_ext={"val_res_payload": res_payload}  # 👈 ここに入れる！
+            )
+
+            return True # 完了
 
         except Exception as e:
             logger.error(f"❌ Error in execute_logic: {e}")
-            return False  # エラー時は False を返して failed 扱いにさせる
+            # エラー時も報告を忘れない
+            self.send_response("error", log_msg=str(e), log_code=500)
+            return False
 
     def on_idle_reset(self):
         # 🌟 DBステータスを戻し、イベント通知

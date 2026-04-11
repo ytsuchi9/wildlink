@@ -175,6 +175,15 @@ class WildLinkHubManager:
         # 2. Completed (正常終了)
         elif status == "completed" or status == "success":
             logger.info(f"🏁 [FIN] Command {cmd_id} completed successfully.")
+            
+            # 🌟 修正：設定値を「payload直下」または「log_extの中」から探す
+            log_ext = payload.get('log_ext') or {}
+            res_val = payload.get('val_res_payload') or log_ext.get('val_res_payload')
+
+            if res_val:
+                logger.info(f"💾 Updating node_configs with: {res_val}")
+                self.db.sync_node_config_from_payload(cmd_id, res_val)
+
             self.db.finalize_command(
                 cmd_id=cmd_id,
                 status="completed",

@@ -166,6 +166,24 @@ class DBBridge:
                 except: pass
         return links
 
+    def sync_node_config_from_payload(self, cmd_id, config_dict):
+        """
+        コマンドIDから対象のNodeを特定し、送られてきた設定値で node_configs を更新する
+        """
+        # 1. コマンドIDから sys_id と vst_role_name を特定
+        res = self.fetch_one("SELECT sys_id, vst_role_name FROM node_commands WHERE id = %s", (cmd_id,))
+        if not res: return
+        
+        sys_id = res['sys_id']
+        role = res['vst_role_name']
+
+        # 2. node_configs テーブルの該当カラムを動的に更新
+        for key, value in config_dict.items():
+            # WES2026規則: val_ で始まるカラムのみ更新（SQLインジェクション対策としてキーをチェック）
+            if key.startswith('val_') or key.startswith('act_'):
+                sql = f"UPDATE node_configs SET {key} = %s WHERE sys_id = %s AND vst_role_name = %s"
+                self.execute(sql, (value, sys_id, role))
+
     # --- 🛰️ コマンド・ライフサイクル管理 (WES 2026) ---
 
     def fetch_pending_commands(self, sys_id=None):
