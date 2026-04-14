@@ -3,9 +3,15 @@ import os
 import time
 import json
 
-# --- パス解決 (WES 2026 標準スタイル) ---
+# --- フェーズ1: パス解決と.envの確実な読み込み ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 wildlink_root = os.path.abspath(os.path.join(current_dir, ".."))
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(wildlink_root, ".env"))
+except ImportError:
+    pass
 
 if wildlink_root not in sys.path:
     sys.path.insert(0, wildlink_root)
@@ -30,6 +36,7 @@ GROUP_ID    = getattr(config_loader, 'GROUP_ID', 'home_internal')
 
 class WildLinkStatusEngine:
     def __init__(self):
+        """初期化：DBBridgeのインスタンスを生成し、DB接続を準備します。"""
         try:
             self.db = DBBridge()
         except Exception as e:
@@ -37,11 +44,16 @@ class WildLinkStatusEngine:
             sys.exit(1)
 
     def on_message(self, client, userdata, msg):
+        """
+        [MQTTコールバック] 
+        /report トピックで送信されるノードのシステムメトリクス(CPU等)や
+        環境データを受信し、データベース(system_logs)に記録します。
+        """
         try:
             topic_parts = msg.topic.split('/')
             if len(topic_parts) < 3: return
                 
-            # 🌟 修正: ハードコードを MQTT_PREFIX に変更
+            # MQTT_PREFIX に基づくトピック解析
             if topic_parts[0] == MQTT_PREFIX:
                 sys_id = topic_parts[2]
                 vst_role = topic_parts[3]
@@ -59,10 +71,10 @@ class WildLinkStatusEngine:
 
             payload = json.loads(msg.payload.decode())
             
-            # 生存報告
+            # 生存報告: node_heartbeat を更新
             self.db.update_node_heartbeat(sys_id, status="online")
 
-            # システムメトリクス (sys_)
+            # システムメトリクス (sys_) を info ログとして記録
             sys_mon = payload.get("sys_monitor", {})
             if sys_mon:
                 ext_info = {
@@ -72,12 +84,16 @@ class WildLinkStatusEngine:
                 }
                 self.db.insert_system_log(sys_id, vst_role, "info", "Telemetry received", code=200, ext=json.dumps(ext_info))
 
-            # 環境データ (env_)
+            # 環境データ (env_) と unit データをアーカイブ
             env_data = {k: v for k, v in payload.items() if k.startswith("env_")}
             units_data = payload.get("units", {})
 
             if env_data or units_data:
-                self.db.insert_node_data(sys_id, vst_role, env_data, raw_json=json.dumps(units_data))
+                # 警告: insert_node_data はDBBridgeに存在する必要があります
+                if hasattr(self.db, 'insert_node_data'):
+                    self.db.insert_node_data(sys_id, vst_role, env_data, raw_json=json.dumps(units_data))
+                else:
+                    logger.debug(f"ℹ️ insert_node_data method missing in DBBridge. Skipping data insert.")
             
             logger.debug(f"📥 [report] {sys_id}:{vst_role} Metrics archived.")
 
@@ -85,12 +101,13 @@ class WildLinkStatusEngine:
             logger.error(f"❌ Message processing error: {e}")
 
     def run(self):
+        """エンジン起動：MQTTブローカーに接続し、/reportトピックの購読ループを開始します。"""
         logger.info(f"Connecting to MQTT Broker: {BROKER}...")
         mqtt = MQTTClient(BROKER, "wildlink_status_engine")
         mqtt.client.on_message = self.on_message
         
         if mqtt.connect():
-            # 🌟 修正: f-string でプレフィックスを動的に設定
+            # 古い形式と新しい形式の両方の report トピックを購読
             mqtt.client.subscribe("vst/+/report")
             mqtt.client.subscribe(f"{MQTT_PREFIX}/{GROUP_ID}/+/+/report")
             
@@ -101,7 +118,6 @@ class WildLinkStatusEngine:
             except KeyboardInterrupt:
                 mqtt.disconnect()
         else:
-            # 🌟 修正: 接続失敗時にログを出して終了（これでHub側で原因が追えます）
             logger.error(f"❌ Failed to connect to MQTT Broker at {BROKER}")
             sys.exit(1)
 

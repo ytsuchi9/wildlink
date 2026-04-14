@@ -1,14 +1,17 @@
 /**
  * VstManager: WES 2026 対応版
+ * 役割: 画面の初期化、MQTTの接続管理、各ユニット(プラグイン)の動的読み込みと
+ * メッセージのディスパッチ(振り分け)を行うフロントエンドのコアハブ。
  */
 class VstManager {
-    // 🌟 groupId を追加。PHP側から渡すか、global変数を参照するようにします。
-    // 🌟 prefix を引数に追加し、デフォルト値を設定
-    
     // 🌟 プラグインを保持するための静的な保管場所
     static plugins = {};
 
-    // 🌟 プラグインを登録するためのメソッド（これが足りなかった！）
+    /**
+     * プラグインクラスを登録する
+     * @param {string} roleType - 'camera', 'system', 'motion' などのクラス名
+     * @param {class} pluginClass - 実行するクラスの実体
+     */
     static registerPlugin(roleType, pluginClass) {
         this.plugins[roleType.toLowerCase()] = pluginClass;
         console.log(`[VstManager] Plugin registered: ${roleType}`);
@@ -17,13 +20,17 @@ class VstManager {
     constructor(nodeId, groupId = "home_internal", prefix = "wildlink") {
         this.nodeId = nodeId;
         this.groupId = groupId;
-        this.prefix = prefix; // 🌟 追加
+        this.prefix = prefix; 
         this.units = {}; 
         this.loadedScripts = new Set(); 
         this.mqttClient = null;
         this.isMqttConnected = false;
     }
 
+    /**
+     * マネージャーの初期化処理
+     * DB(API)から構成を取得し、必要なJSを読み込み、画面を描画してMQTTを接続する。
+     */
     async init() {
         try {
             const res = await fetch(`api/get_node_config.php?sys_id=${this.nodeId}`);
@@ -38,7 +45,11 @@ class VstManager {
         }
     }
 
+    /**
+     * Paho MQTT クライアントのセットアップと接続
+     */
     setupMqtt() {
+        // Websocket経由で接続するため、ポートは9001を想定
         const brokerHost = window.location.hostname;
         const brokerPort = 9001; 
         const clientId = `web_${this.nodeId}_${Math.random().toString(16).substr(2, 5)}`;
@@ -46,6 +57,7 @@ class VstManager {
         try {
             this.mqttClient = new Paho.MQTT.Client(brokerHost, brokerPort, "", clientId);
 
+            // 切断時の自動再接続処理
             this.mqttClient.onConnectionLost = (res) => {
                 this.isMqttConnected = false;
                 if (res.errorCode !== 0) {
@@ -54,6 +66,7 @@ class VstManager {
                 }
             };
 
+            // メッセージ受信時のコールバック
             this.mqttClient.onMessageArrived = (message) => {
                 this.dispatchMqtt(message.destinationName, message.payloadString);
             };
@@ -63,17 +76,16 @@ class VstManager {
                 onSuccess: () => {
                     this.isMqttConnected = true;
                 
-                    // 🌟 修正: WES 2026標準トピックを購読
-                    // 🌟 ハードコードを排除し、動的なトピックを生成
+                    // 🌟 WES 2026標準トピックの購読 (例: wildlink/home_internal/node_001/#)
                     const topic = `${this.prefix}/${this.groupId}/${this.nodeId}/#`;
                     this.mqttClient.subscribe(topic);
                     console.log(`%c[VstManager] MQTT Active: ${topic}`, "color: #00ff00; font-weight: bold;");
                 },
                 onFailure: (err) => {
                     console.error("[VstManager] MQTT Connection Failed:", err);
-                    setTimeout(() => this.setupMqtt(), 10000);
+                    setTimeout(() => this.setupMqtt(), 10000); // 失敗時も再試行
                 },
-                useSSL: (window.location.protocol === "https:"),
+                useSSL: (window.location.protocol === "https:"), // HTTPS環境ならWSSを使用
                 mqttVersion: 4,
                 cleanSession: true
             };
@@ -85,8 +97,8 @@ class VstManager {
     }
 
     /**
-     * 🌟 修正: 階層構造の変化に対応
-     * Topic index: 0:wildlink / 1:group / 2:node / 3:role / 4:type
+     * 受信したMQTTメッセージを適切なユニットインスタンスへ振り分ける
+     * Topic index: 0:prefix / 1:group / 2:node / 3:role / 4:type
      */
     dispatchMqtt(topic, payload) {
         try {
@@ -114,12 +126,13 @@ class VstManager {
                 return;
             }
 
-            // 🌟 ここで確実にオブジェクトに対してプロパティをセット
+            // 受信データに役割とメッセージタイプを付与しておく
             data.role = role;
             data.msg_type = type;
 
             const unit = this.units[role];
             if (unit && unit.instance) {
+                // イベント(event)なら onEvent へ、それ以外(環境データやステータス)なら update へ
                 if (type === 'event' && typeof unit.instance.onEvent === 'function') {
                     unit.instance.onEvent(data);
                 } else if (typeof unit.instance.update === 'function') {
@@ -131,6 +144,9 @@ class VstManager {
         }
     }
 
+    /**
+     * DBの設定に基づいて必要なプラグインJSを動的に読み込む
+     */
     async loadRequiredScripts(configs) {
         const loadPromises = [];
         configs.forEach(conf => {
@@ -141,9 +157,12 @@ class VstManager {
                 this.loadedScripts.add(scriptPath);
             }
         });
-        return Promise.all(loadPromises);
+        return Promise.all(loadPromises); // 全てのスクリプトの読み込み完了を待つ
     }
 
+    /**
+     * <script>タグを生成してDOMに追加するヘルパー
+     */
     injectScript(path) {
         return new Promise((resolve) => {
             const script = document.createElement('script');
@@ -155,7 +174,7 @@ class VstManager {
     }
 
     /**
-     * データベースの設定に基づき、ラックにユニットを配置・初期化する
+     * データベースの設定に基づき、ラック(画面)にユニットを配置・初期化する
      * @param {Array} configs - api/get_node_config.php から取得した設定配列
      */
     renderRack(configs) {
@@ -167,8 +186,8 @@ class VstManager {
             // 1. 無効なユニット（is_active=0）はスキップ
             if (parseInt(conf.is_active) === 0) return;
 
-            const role = conf.vst_role_name; // 'cam_main', 'sns_move' など
-            const vstClass = conf.vst_class.toLowerCase(); // 'camera', 'system' など
+            const role = conf.vst_role_name; 
+            const vstClass = conf.vst_class.toLowerCase(); 
             
             // 2. ユニットの外装（DOMエレメント）を作成
             const div = document.createElement('div');
@@ -223,17 +242,23 @@ class VstManager {
         });
     }
 
+    /**
+     * 定期更新のループを開始する（MQTT切断時のフォールバック用）
+     */
     startLoop() {
         this.refresh();
         setInterval(() => this.refresh(), 5000);
     }
 
+    /**
+     * APIを叩いて最新の死活監視・バイタル情報を取得・更新する
+     */
     async refresh() {
         try {
             const res = await fetch(`api/get_node_status.php?sys_id=${this.nodeId}`);
             const data = await res.json();
             
-            // Vitals更新
+            // Vitals更新 (CPU温度, RSSI等)
             if (data.vitals) {
                 const v = data.vitals;
                 const setV = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val || '--'; };

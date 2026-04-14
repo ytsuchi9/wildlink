@@ -3,12 +3,16 @@ import os
 import sys
 import json
 
-# 🌟 どんな環境からも config_loader を確実に見つける魔法の3行
+# --- フェーズ1: パス解決の強化 ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# 🌟 どんな環境からも config_loader を確実に見つける
 try:
     from common import config_loader
 except ImportError:
-    # 自身が common フォルダ内で実行された、あるいはパスが通っていない場合
-    current_dir = os.path.dirname(os.path.abspath(__file__))
     if current_dir not in sys.path:
         sys.path.insert(0, current_dir)
     import config_loader
@@ -18,9 +22,10 @@ GROUP_ID    = getattr(config_loader, 'GROUP_ID', 'home_internal')
 
 class MQTTClient:
     def __init__(self, broker_address, client_id):
+        """初期化：Paho MQTTのバージョンに合わせたクライアント生成を行います。"""
         self.broker = broker_address
         self.client_id = client_id
-        self.on_command_callback = None  # コマンド受信時に呼び出す外部関数
+        self.on_command_callback = None  
         
         # --- Paho MQTT バージョン互換性の維持 ---
         try:
@@ -30,7 +35,6 @@ class MQTTClient:
             # Paho MQTT v1.x 
             self.client = mqtt.Client(client_id)
         
-        # 内部イベントハンドラの設定
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
 
@@ -42,7 +46,7 @@ class MQTTClient:
         self.on_command_callback = callback
 
     def _on_connect(self, client, userdata, flags, rc):
-        """接続完了時の処理"""
+        """[コールバック] 接続完了時の処理"""
         if rc == 0:
             print(f"[MQTT] Connected to {self.broker}")
         else:
@@ -50,22 +54,19 @@ class MQTTClient:
 
     def _on_message(self, client, userdata, msg):
         """
-        WES 2026 準拠: 受信したトピックから Role を抽出してディスパッチする
+        [コールバック] 受信したトピックから Role を抽出してディスパッチする
         Topic: {MQTT_PREFIX}/{GROUP_ID}/{sys_id}/{role}/cmd
         """
         try:
-            # トピックを分割して role を特定 (3番目の要素)
-            # 例: "wildlink/node_001/log_sys/cmd" -> ["wildlink", "node_001", "log_sys", "cmd"]
             parts = msg.topic.split('/')
             if len(parts) < 4:
-                return # 構造が違う場合は無視
+                return 
 
             role = parts[3] 
             payload = json.loads(msg.payload.decode('utf-8'))
 
             print(f"[MQTT] Received command for Role: {role}")
 
-            # 登録されたコールバックがあれば実行
             if self.on_command_callback:
                 self.on_command_callback(role, payload)
 
@@ -73,7 +74,7 @@ class MQTTClient:
             print(f"[MQTT] Error parsing message: {e}")
 
     def connect(self):
-        """ブローカーへ接続し、ループを開始する"""
+        """ブローカーへ接続し、非同期のネットワークループを開始する"""
         try:
             self.client.connect(self.broker, 1883, 60)
             self.client.loop_start()
@@ -83,45 +84,43 @@ class MQTTClient:
             return False
 
     def subscribe_commands(self, sys_id):
-        """
-        WES 2026 準拠: 自分のノード宛の全役割のコマンドを一括購読
-        """
+        """指定したノード宛ての全コマンドトピック(cmd)を一括購読する"""
         topic = f"{MQTT_PREFIX}/{GROUP_ID}/{sys_id}/+/cmd"
         self.client.subscribe(topic)
         print(f"[MQTT] Subscribed to {topic}")
 
     def publish_event(self, sys_id, role, data):
-        """WES 2026 準拠: イベントトピックへ送信 (Node -> Server/Browser)"""
+        """イベントトピック(/event)へデータを送信する"""
         topic = f"{MQTT_PREFIX}/{GROUP_ID}/{sys_id}/{role}/event"
         return self.publish(topic, data)
 
     def publish_env(self, sys_id, role, data):
-        """WES 2026 準拠: 環境データトピックへ送信 (Node -> DB)"""
+        """環境データトピック(/env)へデータを送信する"""
         topic = f"{MQTT_PREFIX}/{GROUP_ID}/{sys_id}/{role}/env"
         return self.publish(topic, data)
 
     def publish_res(self, sys_id, role, cmd_id, cmd_status, val_status="acknowledged", log_msg=""):
         """
-        WES 2026 準拠: コマンドに対する応答 (ACK/結果) を送信する
+        コマンドに対する応答 (ACK/結果) を /res トピックへ送信する
         Hub側の `acked_at` や `completed_at` を更新させるための必須メソッド
         """
         topic = f"{MQTT_PREFIX}/{GROUP_ID}/{sys_id}/{role}/res"
         data = {
             "ref_cmd_id": cmd_id,
-            "cmd_status": cmd_status,  # "acknowledged" か "completed" を期待
+            "cmd_status": cmd_status,  
             "val_status": val_status,
             "log_msg": log_msg
         }
         return self.publish(topic, data)
 
     def publish(self, topic, data):
-        """汎用的なパブリッシュ（データをJSONに変換）"""
+        """指定したトピックへJSON形式でデータをパブリッシュする汎用メソッド"""
         payload = json.dumps(data, ensure_ascii=False)
         result = self.client.publish(topic, payload)
         return result.rc == mqtt.MQTT_ERR_SUCCESS
 
     def disconnect(self):
-        """接続解除"""
+        """非同期ループを停止し、ブローカーから切断する"""
         self.client.loop_stop()
         self.client.disconnect()
         print("[MQTT] Disconnected")

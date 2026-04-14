@@ -8,6 +8,7 @@
  * 3. ブラウザローカルでの通知音再生
  * =========================================================
  */
+
 /**
  * WES 2026: MotionUnit (9.5-inch Half Rack Style)
  */
@@ -31,6 +32,9 @@ class MotionUnit extends VstUnitBase {
         this.lastDetectTime = "---";
     }
 
+    /**
+     * UIの描画と初期イベントの登録を行います。
+     */
     initUI() {
         const content = document.getElementById(`content-${this.roleName}`);
         if (!content) return;
@@ -88,7 +92,8 @@ class MotionUnit extends VstUnitBase {
     }
 
     /**
-     * UIの見た目を現在の val_enabled 状態に合わせて更新する
+     * UIの見た目を現在の val_enabled (画面のスイッチ状態) に合わせて更新する。
+     * ※重複していたメソッドを統合し、全要素(LED、ステータス、背景色)の変更をカバーしました。
      */
     updateVisualState() {
         const isEnabled = document.getElementById(`en-sw-${this.roleName}`).checked;
@@ -98,18 +103,22 @@ class MotionUnit extends VstUnitBase {
         const display  = document.getElementById(`display-${this.roleName}`);
 
         if (isEnabled) {
-            pluginEl.classList.remove('unit-disabled');
-            ledEl.className = 'status-led led-on';
-            statEl.innerText = "SCANNING";
-            statEl.style.color = "var(--accent-green)";
-            display.style.background = "#0a1a0a"; // 稼働中っぽいうっすら緑
+            if (pluginEl) pluginEl.classList.remove('unit-disabled');
+            if (ledEl) ledEl.className = 'status-led led-on';
+            if (statEl) { 
+                statEl.innerText = "SCANNING"; 
+                statEl.style.color = "var(--accent-green)"; 
+            }
+            if (display) display.style.background = "#0a1a0a"; // 稼働中っぽいうっすら緑
         } else {
             // Disable時も明るく表示するが、背景をグレーにして「待機感」を出す
-            pluginEl.classList.add('unit-disabled');
-            ledEl.className = 'status-led led-off';
-            statEl.innerText = "PAUSED";
-            statEl.style.color = "#555";
-            display.style.background = "#111";
+            if (pluginEl) pluginEl.classList.add('unit-disabled');
+            if (ledEl) ledEl.className = 'status-led led-off';
+            if (statEl) { 
+                statEl.innerText = "PAUSED"; 
+                statEl.style.color = "#555"; 
+            }
+            if (display) display.style.background = "#111";
         }
     }
 
@@ -176,22 +185,6 @@ class MotionUnit extends VstUnitBase {
     }
 
     /**
-     * val_enabled (有効/無効) の状態に応じて、パネル全体の見た目とテキストを更新する
-     */
-    updateVisualState() {
-        const ledEl = document.getElementById(`led-${this.roleName}`);
-        const statEl = document.getElementById(`stat-${this.roleName}`);
-        
-        if (this.val_enabled) {
-            if (ledEl) ledEl.className = 'status-led led-on';
-            if (statEl) { statEl.innerText = "SCANNING"; statEl.style.color = "var(--accent-green)"; }
-        } else {
-            if (ledEl) ledEl.className = 'status-led led-off';
-            if (statEl) { statEl.innerText = "PAUSED"; statEl.style.color = "#555"; }
-        }
-    }
-
-    /**
      * MQTTからブロードキャストされたイベントを受け取る (VstManagerから呼ばれる)
      * @param {Object} data - 受信したイベントペイロード
      */
@@ -211,31 +204,41 @@ class MotionUnit extends VstUnitBase {
         }
     }
 
+    /**
+     * 動体検知時の画面描画とサウンド再生
+     */
     handleDetection(data) {
         const icon = document.getElementById(`icon-${this.roleName}`);
         const stat = document.getElementById(`stat-${this.roleName}`);
         const timeEl = document.getElementById(`time-${this.roleName}`);
         const display = document.getElementById(`display-${this.roleName}`);
 
+        // 検知時刻の更新 (日本のタイムゾーン JST のフォーマットで表示)
         if (data.env_last_detect) {
             this.lastDetectTime = new Date(data.env_last_detect).toLocaleTimeString('ja-JP');
             if (timeEl) timeEl.innerText = this.lastDetectTime;
         }
 
+        // 赤色点滅エフェクト
         if (icon) { icon.style.color = "var(--accent-red)"; icon.classList.add('vst-blink'); }
         if (stat) { stat.innerText = "DETECTED"; stat.style.color = "var(--accent-red)"; }
         if (display) display.style.boxShadow = "inset 0 0 15px rgba(220,53,69,0.5)";
 
+        // ビープ音再生
         if (this.soundEnabled) {
             new Audio(this.sounds[this.selectedSound]).play().catch(() => {});
         }
     }
 
+    /**
+     * インターバル経過後の画面リセット処理
+     */
     handleReset() {
         const icon = document.getElementById(`icon-${this.roleName}`);
         const stat = document.getElementById(`stat-${this.roleName}`);
         const display = document.getElementById(`display-${this.roleName}`);
 
+        // 緑色のスキャン状態に戻す
         if (icon) { icon.style.color = "var(--text-dim)"; icon.classList.remove('vst-blink'); }
         if (stat) { stat.innerText = "SCANNING"; stat.style.color = "var(--accent-green)"; }
         if (display) display.style.boxShadow = "none";

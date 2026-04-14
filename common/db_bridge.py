@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from datetime import datetime
 
 # 🌟 DBBridge専用のロガー（DBへの書き込みを行わず、コンソールのみ）
-# 循環インポートによる無限ループを防止するための安全なロガーです
 db_logger = logging.getLogger("db_bridge_safe")
 if not db_logger.handlers:
     handler = logging.StreamHandler()
@@ -18,6 +17,7 @@ if not db_logger.handlers:
 
 class DBBridge:
     def __init__(self, dotenv_path=None):
+        """初期化：.envからDB接続情報を読み込み、接続準備を行います。"""
         if dotenv_path is None:
             current_dir = os.path.dirname(os.path.abspath(__file__))
             dotenv_path = os.path.join(os.path.dirname(current_dir), ".env")
@@ -34,7 +34,7 @@ class DBBridge:
             db_logger.error(f"[DBBridge] ⚠️ DB_HOST is not defined in {dotenv_path}")
 
     def _get_connection(self):
-        """DB接続の取得と再接続管理"""
+        """DB接続の取得と再接続管理を行います。切断時は自動で再接続を試みます。"""
         if self.conn is None or not self.conn.is_connected():
             try:
                 self.conn = mysql.connector.connect(
@@ -53,7 +53,7 @@ class DBBridge:
         return self.conn
 
     def execute(self, sql, params=None):
-        """汎用実行メソッド (CUD操作用)"""
+        """汎用実行メソッド (INSERT/UPDATE/DELETE用)。トランザクションをコミットします。"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(buffered=True)
@@ -67,7 +67,7 @@ class DBBridge:
             return False
 
     def fetch_one(self, sql, params=None):
-        """1件取得用"""
+        """SELECT文を実行し、結果を辞書型で1件だけ取得します。"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True, buffered=True)
@@ -80,7 +80,7 @@ class DBBridge:
             return None
 
     def fetch_all(self, sql, params=None):
-        """全件取得用"""
+        """SELECT文を実行し、該当するすべての結果を辞書型のリストで取得します。"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(dictionary=True, buffered=True)
@@ -92,10 +92,10 @@ class DBBridge:
             db_logger.error(f"[DBBridge] FetchAll Error: {e}")
             return []
 
-    # --- 📋 ログ・履歴管理 (logger_config.py から呼ばれるメソッド) ---
+    # --- 📋 ログ・履歴管理 ---
 
     def insert_system_log(self, sys_id, log_type, level, msg, code=0, ext=None):
-        """システムログの保存 (AttributeError解消用)"""
+        """システム動作の履歴を system_logs テーブルに保存します。拡張データ(ext)はJSON化されます。"""
         sql = """
             INSERT INTO system_logs (sys_id, log_type, log_level, log_msg, log_code, log_ext)
             VALUES (%s, %s, %s, %s, %s, %s)
@@ -104,7 +104,7 @@ class DBBridge:
         return self.execute(sql, (sys_id, log_type, level, msg, code, ext_json))
 
     def insert_event_log(self, sys_id, vst_role_name, payload):
-        """VSTイベントの保存"""
+        """VSTユニットからのイベント（状態変化など）を system_logs テーブルに保存します。"""
         log_code = payload.get('log_code', 200)
         log_msg = payload.get('log_msg', f"Event from {vst_role_name}")
         level = payload.get('log_level', 'info')
@@ -119,11 +119,12 @@ class DBBridge:
     # --- ⚙️ 設定・ノード状態管理 ---
 
     def update_node_heartbeat(self, sys_id, status="online"):
+        """ノードの生存確認（死活監視）として、最終更新時刻とステータスを更新します。"""
         query = "UPDATE nodes SET sys_status = %s, updated_at = NOW() WHERE sys_id = %s AND is_active = 1"
         return self.execute(query, (status, sys_id))
 
     def update_node_status(self, sys_id, role, status_dict):
-        """node_status_currentの更新 (JSON変換対応)"""
+        """ノードまたは役割ごとの現在の物理状態（node_status_current）をJSON辞書をもとに更新します。"""
         allowed_keys = ['val_status', 'net_ip', 'sys_cpu_t', 'sys_volt', 'val_paused', 'log_msg', 'log_ext', 'log_code']
         clean_dict = {k: v for k, v in status_dict.items() if k in allowed_keys}
         if not clean_dict: return False
@@ -143,6 +144,7 @@ class DBBridge:
         return self.execute(query, tuple(values))
 
     def fetch_node_config(self, sys_id):
+        """DBからノードの現在の動作設定パラメータ一式（node_configsとカタログのJOIN）を取得します。"""
         query = """
             SELECT c.vst_type, c.val_params, c.is_active, c.vst_role_name, 
                    c.hw_driver, c.hw_bus_addr, c.val_unit_map, cat.vst_class, cat.vst_module
@@ -158,6 +160,7 @@ class DBBridge:
         return configs
 
     def fetch_vst_links(self, sys_id):
+        """VST間の連動設定（例：人感センサー反応でカメラON）の一覧を取得します。"""
         query = "SELECT source_role, target_role, event_type, action_cmd, action_params, val_interval FROM vst_links WHERE sys_id = %s AND is_active = 1"
         links = self.fetch_all(query, (sys_id,))
         for l in links:
@@ -167,19 +170,14 @@ class DBBridge:
         return links
 
     def sync_node_config_from_payload(self, cmd_id, config_dict):
-        """
-        コマンドIDから対象のNodeを特定し、送られてきた設定値で node_configs を更新する
-        """
-        # 1. コマンドIDから sys_id と vst_role_name を特定
+        """完了したコマンドの内容をもとに、DBのnode_configsを直接上書き更新(同期)します。"""
         res = self.fetch_one("SELECT sys_id, vst_role_name FROM node_commands WHERE id = %s", (cmd_id,))
         if not res: return
         
         sys_id = res['sys_id']
         role = res['vst_role_name']
 
-        # 2. node_configs テーブルの該当カラムを動的に更新
         for key, value in config_dict.items():
-            # WES2026規則: val_ で始まるカラムのみ更新（SQLインジェクション対策としてキーをチェック）
             if key.startswith('val_') or key.startswith('act_'):
                 sql = f"UPDATE node_configs SET {key} = %s WHERE sys_id = %s AND vst_role_name = %s"
                 self.execute(sql, (value, sys_id, role))
@@ -187,6 +185,7 @@ class DBBridge:
     # --- 🛰️ コマンド・ライフサイクル管理 (WES 2026) ---
 
     def fetch_pending_commands(self, sys_id=None):
+        """まだノードへ配送されていない(pending)状態のコマンドを古い順に取得します。"""
         query = "SELECT * FROM node_commands WHERE val_status = 'pending'"
         params = []
         if sys_id:
@@ -196,7 +195,7 @@ class DBBridge:
         return self.fetch_all(query, params)
 
     def update_command_status(self, cmd_id, status, log_msg=None):
-        """Dispatcher用：ステータス更新と時刻刻印"""
+        """コマンドの状態（sentやacknowledged等）と、それに応じた時刻スタンプを更新します。"""
         if not cmd_id or cmd_id == 0: return False
         
         timestamp_col = ""
@@ -207,7 +206,7 @@ class DBBridge:
         return self.execute(sql, (status, log_msg, cmd_id))
 
     def mark_command_acknowledged(self, cmd_id):
-        """受領済みマーク (逆転防止ガード付き)"""
+        """ノードからの受領確認（ACK）を受け、acked_atに時刻を記録します（逆転防止ガード付き）。"""
         sql = """
             UPDATE node_commands SET acked_at = NOW(3), val_status = 'acknowledged' 
             WHERE id = %s AND acked_at IS NULL AND val_status NOT IN ('completed', 'error')
@@ -215,7 +214,7 @@ class DBBridge:
         return self.execute(sql, (cmd_id,))
 
     def finalize_command(self, cmd_id, status, log_msg='', log_code=200, res_payload=None):
-        """コマンド完了処理"""
+        """コマンドの最終決着（completed/error等）を行い、completed_atに時刻を記録して処理を終了します。"""
         if not cmd_id or cmd_id == 0: return False
         res_json = json.dumps(res_payload, ensure_ascii=False) if res_payload else None
         sql = """

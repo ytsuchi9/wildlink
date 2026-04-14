@@ -10,14 +10,10 @@ class WildLinkVSTBase:
     """
     WildLink Event Standard (WES) 2026 準拠
     すべての WildLink VST (Virtual System Unit) の基底クラス。
-    
-    [WES 2026 ライフサイクル管理]
-    1. control(): コマンドを受信し ref_cmd_id を保持。
-    2. send_response("acknowledged"): 「届いた」ことをHub/DBへ即報告 (acked_at)
-    3. send_response("completed"): 「完了した」ことをHub/DBへ報告 (completed_at)
     """
 
     def __init__(self, sys_id, role, params=None, mqtt_client=None, event_callback=None):
+        """初期化：ベース属性のセット、WESステータス変数の準備、初期パラメータの展開を行います。"""
         self.sys_id = sys_id
         self.vst_role_name = role 
         self.role = role 
@@ -28,15 +24,14 @@ class WildLinkVSTBase:
         self.db = DBBridge()
         
         # --- WES 2026 標準ステータス変数の初期化 ---
-        self.val_status = "idle"       # idle/streaming/error/starting
-        self.log_code = 200            # ハイブリッドエラーコード (200: OK, 4xx/5xx: Error)
-        self.log_ext = {}              # 詳細コンテキスト (JSON辞書)
+        self.val_status = "idle"       
+        self.log_code = 200            
+        self.log_ext = {}              
         self.log_msg = "Initialized"
         
         self.val_enabled = self.params.get("val_enabled", True)
-        self.ref_cmd_id = 0            # 処理中のコマンドID（0はアクティブなし）
+        self.ref_cmd_id = 0            
         
-        # 起動時のパラメータ展開
         if isinstance(self.params, dict):
             self.log_ext = self.params.get("log_ext", {})
             for key, value in self.params.items():
@@ -45,49 +40,37 @@ class WildLinkVSTBase:
 
         logger.debug(f"[{self.role}] VST Unit Instance created (ID: {self.sys_id})")
 
-    # ---------------------------------------------------------
-    # コマンド制御フロー
-    # ---------------------------------------------------------
-
     def control(self, payload):
         """
-        [入口] 命令をパースし、個別ロジック(execute_logic)を叩く。
+        [入口] HubからのコマンドJSONを受け取り、自身の属性（val_等）を更新した後、
+        具象クラス固有の execute_logic へ処理を委譲します。
         """
-        # 1. コマンドIDの紐付け (ref_cmd_id に保存)
         self.ref_cmd_id = payload.get("cmd_id", payload.get("ref_cmd_id", 0))
 
-        # 2. 接頭語に基づいた属性の自動更新
         for key, value in payload.items():
             if any(key.startswith(pre) for pre in ["act_", "val_", "env_", "sys_", "log_"]):
                 setattr(self, key, value)
         
-        # 3. 具象クラスの個別ロジックを実行
         self.execute_logic(payload)
 
     def execute_logic(self, payload):
-        """[継承先でオーバーライド]"""
+        """[継承先で実装] コマンド受信時に実行される、カメラやセンサー特有の固有ロジックです。"""
         logger.warning(f"[{self.role}] execute_logic is not implemented.")
         pass
 
-    # ---------------------------------------------------------
-    # 応答・報告プロトコル (WES 2026)
-    # ---------------------------------------------------------
-
     def send_response(self, cmd_status=None, log_msg=None, log_code=None):
         """
-        Hubに対して /res トピックで応答を送り、DBのコマンドステータスを連動させる。
+        Hubに対して /res トピックで処理結果や受領確認を送り、DBのステータスと連動させます。
         """
         if log_msg: self.log_msg = log_msg
         if log_code: self.log_code = log_code
 
-        # 1. DBの物理状態(node_status_current)を更新
         self.update_status()
 
-        # 2. MQTTレスポンスペイロードの構築
         res_payload = {
             "vst_role_name": self.vst_role_name,
-            "cmd_status": cmd_status,      # acknowledged / completed / failed
-            "val_status": self.val_status, # 実際の物理状態
+            "cmd_status": cmd_status,      
+            "val_status": self.val_status, 
             "ref_cmd_id": self.ref_cmd_id,
             "log_msg": self.log_msg,
             "log_code": self.log_code,
@@ -95,45 +78,36 @@ class WildLinkVSTBase:
             "timestamp": time.time()
         }
 
-        # Manager(NodeManager)経由でMQTT送信
         self.notify_manager("result", res_payload)
         
-        # 3. DBのコマンド履歴(node_commands)を更新
         if self.ref_cmd_id and cmd_status:
             if cmd_status == "acknowledged":
-                # 受領時刻(acked_at)を刻む
                 self.db.mark_command_acknowledged(self.ref_cmd_id)
             else:
-                # 完了/失敗。完了時刻(completed_at)を刻む
                 self.finalize_command(status=cmd_status, msg=self.log_msg, code=self.log_code)
 
     def finalize_command(self, status="completed", msg=None, code=None, res=None):
-        """
-        コマンドを最終状態にし、時刻を記録する。
-        """
+        """処理中のコマンドID (ref_cmd_id) を最終状態(完了・失敗など)にし、アクティブIDをクリアします。"""
         if self.ref_cmd_id:
             target_msg = msg if msg is not None else self.log_msg
             target_code = code if code is not None else self.log_code
             
-            # DBの completed_at を更新
             self.db.finalize_command(self.ref_cmd_id, status, target_msg, target_code, res)
             logger.info(f"[{self.role}] Command {self.ref_cmd_id} finalized as {status}")
             
-            # 完了・エラーは最終状態なので、アクティブなIDをクリア
             if status in ["completed", "failed", "error"]:
                 self.ref_cmd_id = 0
         else:
             logger.debug(f"[{self.role}] No active command ID to finalize.")
 
     def send_event(self, event_name, extra_data=None):
-        """ 状態変化やエラーを /event トピックへ通知 """
+        """状態変化やエラーなどの自発的なイベントを /event トピックへ通知し、ログを保存します。"""
         event_payload = self.report()
         event_payload["event"] = event_name
         if extra_data: event_payload.update(extra_data)
 
         self.notify_manager("event_fired", event_payload)
         
-        # DBにイベントログを記録
         self.db.insert_event_log(self.sys_id, self.vst_role_name, {
             "log_level": self.get_level_from_code(self.log_code),
             "log_msg": f"Event: {event_name} - {self.log_msg}",
@@ -142,7 +116,7 @@ class WildLinkVSTBase:
         })
 
     def update_status(self, val_status=None, log_code=None, log_ext=None):
-        """ 物理状態をDBへ同期する """
+        """自身の現在の物理状態（val_status や log_ext）をDBの node_status_current へ直接同期します。"""
         if val_status is not None: self.val_status = val_status
         if log_code is not None: self.log_code = log_code
         if log_ext is not None: 
@@ -162,17 +136,13 @@ class WildLinkVSTBase:
         except Exception as e:
             logger.error(f"[{self.role}] Failed to update DB status: {e}")
 
-    # ---------------------------------------------------------
-    # ユーティリティ
-    # ---------------------------------------------------------
-
     def notify_manager(self, event_type, payload=None):
-        """コールバック仲介"""
+        """親クラス(MainManager等)のコールバック関数を呼び出し、内部イベントを中継します。"""
         if self.event_callback:
             self.event_callback(self.vst_role_name, event_type, payload)
 
     def report(self):
-        """現在の全 prefixed 属性を抽出"""
+        """プレフィックス（val_, env_ 等）を持つすべての属性を収集し、現在の状態スナップショットとして返します。"""
         data = {"vst_role_name": self.vst_role_name, "ref_cmd_id": self.ref_cmd_id}
         for key, value in self.__dict__.items():
             if any(key.startswith(pre) for pre in ["val_", "env_", "sys_", "log_", "net_", "act_", "hw_"]):
@@ -181,12 +151,12 @@ class WildLinkVSTBase:
         return data
 
     def get_level_from_code(self, code):
-        """エラーコード(WES 2026)からログレベルを判定"""
+        """WESのハイブリッドエラーコード(数値)から、一般的なログレベル(info, warning, error)を判定します。"""
         if code >= 500: return "error"
         if code >= 400: return "warning"
         return "info"
 
     def stop(self):
-        """終了処理"""
+        """システム終了時やユニット破棄時に呼ばれる安全な終了処理です。状態をidleに戻します。"""
         logger.info(f"[{self.role}] Stopping unit...")
         self.update_status(val_status="idle", log_code=200)
