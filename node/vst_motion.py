@@ -46,33 +46,40 @@ class VST_Motion(WildLinkVSTBase):
 
     def execute_logic(self, data):
         """
-        Hubからのコマンド受信時の実処理。
-        設定変更（intervalや録画フラグ等）を受け取り、自身のパラメータを更新します。
+        WES 2026 準拠: 設定パッチの動的適用と log_ext による全状態報告
         """
         try:
-            if "val_enabled" in data:
-                self.val_enabled = (int(data["val_enabled"]) == 1)
-            if "val_interval" in data:
-                self.val_interval = float(data["val_interval"])
-            if "act_rec" in data:
-                self.act_rec = (int(data["act_rec"]) == 1)
-                
-            logger.info(f"⚙️ [{self.role}] Configuration patched: {data}")
+            # 🌟 [WES 2026 儀式] まず受領を報告して acked_at を確定させる
+            cmd_id = data.get('cmd_id')
+            if cmd_id:
+                self.send_response("acknowledged", log_msg="Config update received.")
+            # 1. パッチの適用 (cmd_jsonの内容を自身の属性へ自動反映)
+            # data に含まれるキーのうち、規約(val_, act_)に合致するもののみを上書き
+            updated_keys = []
+            for key, value in data.items():
+                if hasattr(self, key) and key.startswith(('val_', 'act_')):
+                    # 型の整合性を保つための簡易変換 (1/0 -> True/False)
+                    if isinstance(getattr(self, key), bool) and not isinstance(value, bool):
+                        value = (int(value) == 1)
+                    
+                    setattr(self, key, value)
+                    updated_keys.append(key)
 
-            self.update_status(val_status=self.val_status, log_code=200)
+            logger.info(f"⚙️ [{self.role}] Patched: {', '.join(updated_keys)}")
 
-            # 更新後のパラメータを結果としてHubへ返す
-            res_payload = {
-                "val_enabled": 1 if self.val_enabled else 0,
-                "val_interval": self.val_interval,
-                "act_rec": 1 if self.act_rec else 0
+            # 2. 現在の全パラメータを抽出 (データの器：log_ext の生成)
+            # 自身の属性から val_, act_, env_ で始まるものを全て集める
+            current_params = {
+                k: v for k, v in vars(self).items() 
+                if k.startswith(('val_', 'act_', 'env_'))
             }
-            
+
+            # 3. 完了報告 (Hub側のDB: node_configs と node_status_current を同時に更新させる)
             self.send_response(
                 "completed", 
-                log_msg="Configuration updated successfully",
+                log_msg=f"Configuration patched: {', '.join(updated_keys)}",
                 log_code=200,
-                log_ext={"val_res_payload": res_payload} 
+                log_ext=current_params # これがそのままDBの全項目を同期する「器」になる
             )
 
             return True 

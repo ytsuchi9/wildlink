@@ -103,6 +103,47 @@ class DBBridge:
         ext_json = json.dumps(ext, ensure_ascii=False) if ext else None
         return self.execute(sql, (sys_id, log_type, level, msg, code, ext_json))
 
+    def execute_logic(self, data):
+        """
+        WES 2026 準拠: 設定パッチの動的適用と log_ext による全状態報告
+        """
+        try:
+            # 1. パッチの適用 (cmd_jsonの内容を自身の属性へ自動反映)
+            # data に含まれるキーのうち、規約(val_, act_)に合致するもののみを上書き
+            updated_keys = []
+            for key, value in data.items():
+                if hasattr(self, key) and key.startswith(('val_', 'act_')):
+                    # 型の整合性を保つための簡易変換 (1/0 -> True/False)
+                    if isinstance(getattr(self, key), bool) and not isinstance(value, bool):
+                        value = (int(value) == 1)
+                    
+                    setattr(self, key, value)
+                    updated_keys.append(key)
+
+            logger.info(f"⚙️ [{self.role}] Patched: {', '.join(updated_keys)}")
+
+            # 2. 現在の全パラメータを抽出 (データの器：log_ext の生成)
+            # 自身の属性から val_, act_, env_ で始まるものを全て集める
+            current_params = {
+                k: v for k, v in vars(self).items() 
+                if k.startswith(('val_', 'act_', 'env_'))
+            }
+
+            # 3. 完了報告 (Hub側のDB: node_configs と node_status_current を同時に更新させる)
+            self.send_response(
+                "completed", 
+                log_msg=f"Configuration patched: {', '.join(updated_keys)}",
+                log_code=200,
+                log_ext=current_params # これがそのままDBの全項目を同期する「器」になる
+            )
+
+            return True 
+
+        except Exception as e:
+            logger.error(f"❌ Error in execute_logic: {e}")
+            self.send_response("error", log_msg=str(e), log_code=500)
+            return Falsesg, code, ext_json
+
     def insert_event_log(self, sys_id, vst_role_name, payload):
         """VSTユニットからのイベント（状態変化など）を system_logs テーブルに保存します。"""
         log_code = payload.get('log_code', 200)
@@ -142,6 +183,50 @@ class DBBridge:
             query = f"UPDATE node_status_current SET {', '.join(fields)}, updated_at = NOW(3) WHERE sys_id = %s"
             values.append(sys_id)
         return self.execute(query, tuple(values))
+
+    def update_vst_configs(self, sys_id, role, config_dict):
+        """
+        node_configsテーブルを動的に更新する。
+        config_dict: { "val_enabled": 1, "val_interval": 30 ... }
+        log_ext の中身が入れ子になっていても、val_/act_ プレフィックスを探して抽出します。
+        """
+        if not log_ext or not isinstance(log_ext, dict):
+            return True
+
+        # 1. 同期対象データの抽出 (フラット化ロジック)
+        sync_data = {}
+        
+        def extract_params(d):
+            for k, v in d.items():
+                if k.startswith(('val_', 'act_')):
+                    sync_data[k] = v
+                elif isinstance(v, dict): # 中身がさらに辞書なら再帰的に探す
+                    extract_params(v)
+
+        extract_params(log_ext)
+        
+        if not sync_data:
+            logger.debug(f"ℹ️ [DB] No syncable params found in log_ext for {role}")
+            return True
+
+        # 2. SQLの生成と実行
+        try:
+            cols = []
+            vals = []
+            for k, v in target_data.items():
+                # Booleanの変換
+                val = 1 if v is True else (0 if v is False else v)
+                cols.append(f"{k} = %s")
+                vals.append(val)
+
+            sql = f"UPDATE node_configs SET {', '.join(cols)} WHERE sys_id = %s AND vst_role_name = %s"
+            vals.extend([sys_id, role])
+
+            # 既存の実行メソッド（executeなど）を利用
+            return self.execute_query(sql, tuple(vals)) 
+        except Exception as e:
+            logger.error(f"❌ DBBridge Update Error: {e}")
+            return False
 
     def fetch_node_config(self, sys_id):
         """DBからノードの現在の動作設定パラメータ一式（node_configsとカタログのJOIN）を取得します。"""
@@ -217,6 +302,8 @@ class DBBridge:
         """コマンドの最終決着（completed/error等）を行い、completed_atに時刻を記録して処理を終了します。"""
         if not cmd_id or cmd_id == 0: return False
         res_json = json.dumps(res_payload, ensure_ascii=False) if res_payload else None
+        # acked_at がNULLになる場合はSQLに以下を追加
+        # 🌟 acked_at = IFNULL(acked_at, NOW(3)) を追加
         sql = """
             UPDATE node_commands 
             SET val_status = %s, log_msg = %s, log_code = %s, val_res_payload = %s, completed_at = NOW(3) 

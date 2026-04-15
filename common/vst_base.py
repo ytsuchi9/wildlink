@@ -58,14 +58,16 @@ class WildLinkVSTBase:
         logger.warning(f"[{self.role}] execute_logic is not implemented.")
         pass
 
-    def send_response(self, cmd_status=None, log_msg=None, log_code=None):
+    def send_response(self, cmd_status=None, log_msg=None, log_code=None, log_ext=None):
         """
-        Hubに対して /res トピックで処理結果や受領確認を送り、DBのステータスと連動させます。
+        Hubに対して /res トピックで処理結果を送信。
+        Phase 2対応: log_ext を引数で受け取り、内部状態とDBを同期してから送信します。
         """
         if log_msg: self.log_msg = log_msg
         if log_code: self.log_code = log_code
 
-        self.update_status()
+        # update_status を呼び出すことで、self.log_ext の更新と DB同期を同時に行う
+        self.update_status(log_ext=log_ext)
 
         res_payload = {
             "vst_role_name": self.vst_role_name,
@@ -74,7 +76,7 @@ class WildLinkVSTBase:
             "ref_cmd_id": self.ref_cmd_id,
             "log_msg": self.log_msg,
             "log_code": self.log_code,
-            "log_ext": self.log_ext,
+            "log_ext": self.log_ext, # update_status で更新された最新値が載る
             "timestamp": time.time()
         }
 
@@ -100,14 +102,19 @@ class WildLinkVSTBase:
         else:
             logger.debug(f"[{self.role}] No active command ID to finalize.")
 
-    def send_event(self, event_name, extra_data=None):
-        """状態変化やエラーなどの自発的なイベントを /event トピックへ通知し、ログを保存します。"""
+    def send_event(self, event_name, extra_data=None, log_ext=None):
+        """自発的なイベント通知。Phase 2対応で log_ext も引数として受け入れ可能に。"""
+        # イベント発生時に最新パラメータを更新したい場合に備え、update_status を経由
+        if log_ext:
+            self.update_status(log_ext=log_ext)
+
         event_payload = self.report()
         event_payload["event"] = event_name
         if extra_data: event_payload.update(extra_data)
 
         self.notify_manager("event_fired", event_payload)
         
+        # DBのイベントログへ保存
         self.db.insert_event_log(self.sys_id, self.vst_role_name, {
             "log_level": self.get_level_from_code(self.log_code),
             "log_msg": f"Event: {event_name} - {self.log_msg}",
@@ -116,9 +123,11 @@ class WildLinkVSTBase:
         })
 
     def update_status(self, val_status=None, log_code=None, log_ext=None):
-        """自身の現在の物理状態（val_status や log_ext）をDBの node_status_current へ直接同期します。"""
+        """自身の現在の物理状態をDBの node_status_current へ直接同期します。"""
         if val_status is not None: self.val_status = val_status
         if log_code is not None: self.log_code = log_code
+        
+        # log_ext が辞書形式で渡された場合、既存の log_ext とマージ(update)する
         if log_ext is not None: 
             if isinstance(log_ext, dict) and isinstance(self.log_ext, dict):
                 self.log_ext.update(log_ext)
@@ -132,6 +141,8 @@ class WildLinkVSTBase:
         }
         
         try:
+            # sys_id と role (または vst_role_name) を使用してDB更新
+            # ※お送りいただいたコードの引数に合わせて self.role を使用
             self.db.update_node_status(self.sys_id, self.role, payload)
         except Exception as e:
             logger.error(f"[{self.role}] Failed to update DB status: {e}")
@@ -155,6 +166,30 @@ class WildLinkVSTBase:
         if code >= 500: return "error"
         if code >= 400: return "warning"
         return "info"
+
+    def get_vst_params(self):
+        """
+        WES 2026規約に基づき、同期対象のパラメータ(val_, act_, env_)を抽出する。
+        これが log_ext の中身となり、DBの設定値(node_configs)を更新する基準となる。
+        """
+        params = {}
+        # 自身の属性(self.__dict__)からプレフィックスに合致するものを抽出
+        for attr_name, value in self.__dict__.items():
+            if attr_name.startswith(('val_', 'act_', 'env_')):
+                params[attr_name] = value
+        return params
+
+    def create_report_payload(self, msg_type="status"):
+        """
+        Hubへ送るための標準的なペイロードを生成する。
+        log_ext に現在の全パラメータをパッキングする。
+        """
+        return {
+            "role": self.vst_role_name,
+            "msg_type": msg_type,
+            "log_code": 200, # 正常
+            "log_ext": self.get_vst_params() # ここで現在の全設定を載せる
+        }
 
     def stop(self):
         """システム終了時やユニット破棄時に呼ばれる安全な終了処理です。状態をidleに戻します。"""

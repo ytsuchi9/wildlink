@@ -81,17 +81,45 @@ class WildLinkHubManager:
             payload = json.loads(msg.payload.decode())
             if not isinstance(payload, dict): return
 
+            # --- VSTからのレスポンス(res)処理 ---
             if msg_type == 'res':
                 cmd_status = payload.get('cmd_status')
                 val_status = payload.get('val_status')
                 ref_id = payload.get('ref_cmd_id') or payload.get('cmd_id')
+                log_ext = payload.get('log_ext') # フェーズ2: 拡張データの器を取得
 
+                # 1. 現在のステータス(生存確認・稼働状態)を更新
                 if val_status:
                     self.db.update_node_status(sys_id, vst_role, payload)
 
+                # 2. コマンドのライフサイクル管理
                 if ref_id and cmd_status:
                     self._handle_command_lifecycle(ref_id, cmd_status, payload)
 
+                # 3. 【フェーズ2: 設定同期】の堅牢化
+                # 設定変更が正常に完了し、かつ設定値(log_ext)が含まれている場合
+                if cmd_status == 'completed' and log_ext:
+                    # 🌟 救済措置: log_ext が文字列で届いた場合は辞書にパースする
+                    if isinstance(log_ext, str):
+                        try:
+                            import json
+                            log_ext = json.loads(log_ext)
+                        except Exception as e:
+                            logger.error(f"⚠️ [Sync] Failed to parse log_ext string: {e}")
+                            log_ext = None
+
+                    # 辞書として確定している場合のみ同期実行
+                    if isinstance(log_ext, dict):
+                        logger.info(f"🔄 [Sync] '{vst_role}' reporting new config. Syncing...")
+                        sync_success = self.db.update_vst_configs(sys_id, vst_role, log_ext)
+                        if sync_success:
+                            logger.info(f"✅ [Sync] node_configs synchronized successfully.")
+                        else:
+                            logger.warning(f"⚠️ [Sync] node_configs sync failed for {vst_role}.")
+                    else:
+                        logger.debug(f"ℹ️ [Sync] log_ext is empty or invalid format for {vst_role}.")
+
+            # --- VSTからのイベント(event)処理 ---
             elif msg_type == 'event':
                 event_name = payload.get('event')
                 logger.info(f"📥 [event] {sys_id}:{vst_role} -> {event_name}")
