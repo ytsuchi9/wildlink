@@ -102,7 +102,6 @@ class WildLinkHubManager:
                     # 🌟 救済措置: log_ext が文字列で届いた場合は辞書にパースする
                     if isinstance(log_ext, str):
                         try:
-                            import json
                             log_ext = json.loads(log_ext)
                         except Exception as e:
                             logger.error(f"⚠️ [Sync] Failed to parse log_ext string: {e}")

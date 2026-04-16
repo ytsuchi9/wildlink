@@ -186,46 +186,70 @@ class DBBridge:
 
     def update_vst_configs(self, sys_id, role, config_dict):
         """
-        node_configsテーブルを動的に更新する。
-        config_dict: { "val_enabled": 1, "val_interval": 30 ... }
-        log_ext の中身が入れ子になっていても、val_/act_ プレフィックスを探して抽出します。
+        node_configsテーブルを動的に更新。
+        - val_enabled はカラムへ直接。
+        - その他(val_interval等)は val_params(JSON) 内へ保存。
         """
-        if not log_ext or not isinstance(log_ext, dict):
+        if not config_dict or not isinstance(config_dict, dict):
             return True
 
-        # 1. 同期対象データの抽出 (フラット化ロジック)
-        sync_data = {}
+        # 1. データの仕分け
+        direct_columns = {}  # 実際の物理カラム用
+        json_params = {}     # val_params(JSON)用
         
-        def extract_params(d):
+        # 物理カラムとして存在する項目
+        KNOWN_COLUMNS = ['val_enabled'] 
+
+        def sort_params(d):
             for k, v in d.items():
                 if k.startswith(('val_', 'act_')):
-                    sync_data[k] = v
-                elif isinstance(v, dict): # 中身がさらに辞書なら再帰的に探す
-                    extract_params(v)
+                    if k in ['val_status', 'val_paused']: continue # 状態値は除外
+                    
+                    if k in KNOWN_COLUMNS:
+                        direct_columns[k] = v
+                    else:
+                        json_params[k] = v
+                elif isinstance(v, dict):
+                    sort_params(v)
 
-        extract_params(log_ext)
-        
-        if not sync_data:
-            logger.debug(f"ℹ️ [DB] No syncable params found in log_ext for {role}")
-            return True
+        sort_params(config_dict)
 
-        # 2. SQLの生成と実行
         try:
-            cols = []
+            sql_parts = []
             vals = []
-            for k, v in target_data.items():
-                # Booleanの変換
-                val = 1 if v is True else (0 if v is False else v)
-                cols.append(f"{k} = %s")
-                vals.append(val)
 
-            sql = f"UPDATE node_configs SET {', '.join(cols)} WHERE sys_id = %s AND vst_role_name = %s"
+            # A. 物理カラムの更新
+            for k, v in direct_columns.items():
+                sql_parts.append(f"{k} = %s")
+                vals.append(1 if v is True else (0 if v is False else v))
+
+            # B. JSONカラム(val_params)の更新 (JSON_SETを使用)
+            if json_params:
+                # 既存値を壊さないよう JSON_SET(COALESCE(val_params, '{}'), ...)
+                json_expr = "val_params = JSON_SET(COALESCE(val_params, '{}')"
+                for k, v in json_params.items():
+                    json_expr += f", '$.{k}', %s"
+                    vals.append(1 if v is True else (0 if v is False else v))
+                json_expr += ")"
+                sql_parts.append(json_expr)
+
+            if not sql_parts:
+                return True
+
+            # C. SQL組み立てと実行
+            sql = f"UPDATE node_configs SET {', '.join(sql_parts)} WHERE sys_id = %s AND vst_role_name = %s"
             vals.extend([sys_id, role])
 
-            # 既存の実行メソッド（executeなど）を利用
-            return self.execute_query(sql, tuple(vals)) 
+            # 🌟 ここで db_logger (db_bridge_safe) を使用
+            db_logger.debug(f"⚙️ [DB] Syncing config for {role}: {sql} with {vals}")
+            
+            # self.execute 等、既存の実行メソッドを使用
+            self.execute(sql, tuple(vals))
+            return True
+
         except Exception as e:
-            logger.error(f"❌ DBBridge Update Error: {e}")
+            # 🌟 ここも db_logger を使用
+            db_logger.error(f"❌ [DB] update_vst_configs failed: {e}")
             return False
 
     def fetch_node_config(self, sys_id):

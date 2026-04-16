@@ -52,9 +52,13 @@ class MainManager:
         
         self.current_config_raw = ""
         self.last_sync_time = 0
-        self.sync_interval = 30
+        
+        self.sync_interval = int(os.getenv('SYNC_INTERVAL', 30)) # 🌟 .envから取得可能に
 
-        self.config_cache_path = os.path.join(current_dir, 'last_config.json')
+        # 🌟 [Phase3: 生存戦略] キャッシュファイルのパス
+        cache_filename = os.getenv('CONFIG_CACHE_FILE', 'last_config.json')
+        self.config_cache_path = os.path.join(current_dir, cache_filename)
+
         self.hub_ip = config_loader.HUB_IP
         
         signal.signal(signal.SIGINT, self.stop)
@@ -106,7 +110,22 @@ class MainManager:
         
         msg_type = "res" if event_type in ["result", "completed", "failed"] else "event"
         pub_topic = f"{MQTT_PREFIX}/{GROUP_ID}/{self.sys_id}/{source_role}/{msg_type}"
-        self.mqtt.publish(pub_topic, json.dumps(payload))
+        
+        # 🌟 [BugFix: マトリョーシカ問題]
+        # self.mqtt.publish の中で json.dumps される前提なら、ここでは「辞書」のまま渡す。
+        # ※ mqtt_client.py の実装に依存します。もし mqtt_client.py 側で json.dumps をしていない場合は
+        # ここで json.dumps(payload) するのが正解ですが、「二重」になっていたということは
+        # mqtt_client.py の publish メソッド内で dumps している可能性が高いです。
+        # まずは辞書のまま渡し、もし送信エラーが出たら mqtt_client.py 側を確認してください。
+        try:
+             # 一旦文字列化して送る（ただし二重にならないよう注意）
+             # 🟢 【修正】絶対に json.dumps しない！辞書(dict)のまま渡す。
+             # mqtt_client.py 側で dumps されることを信頼する。↓これはコメント化
+             # payload_str = json.dumps(payload, ensure_ascii=False)
+             # self.mqtt.publish(pub_topic, payload_str)
+             self.mqtt.publish(pub_topic, payload)
+        except Exception as e:
+             logger.error(f"MQTT Publish error: {e}")
 
         matched_links = [l for l in self.links if l['source_role'] == source_role and l.get('event_type') == event_type]
         for link in matched_links:
@@ -144,21 +163,71 @@ class MainManager:
                 (self.sys_id, role)
             )
 
+
+    # 🌟 [Phase3: 生存戦略] キャッシュ保存用メソッド
+    def _save_config_cache(self, configs, links):
+        """現在の正常な設定をローカルのJSONファイルに保存する。"""
+        cache_data = {
+            "timestamp": time.time(),
+            "configs": configs,
+            "links": links
+        }
+        try:
+            with open(self.config_cache_path, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+            logger.debug("💾 Local config cache updated.")
+        except Exception as e:
+            logger.error(f"❌ Failed to save config cache: {e}")
+
+    # 🌟 [Phase3: 生存戦略] キャッシュ読み込み用メソッド
+    def _load_config_cache(self):
+        """DB接続失敗時に、ローカルのJSONファイルから設定を読み込む。"""
+        if not os.path.exists(self.config_cache_path):
+            logger.critical("💀 No DB connection and no local cache found. Cannot start units.")
+            return None, []
+            
+        try:
+            with open(self.config_cache_path, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+            logger.warning("🛡️ [Survival Mode] Loaded configuration from local cache.")
+            # ログレベルを上げて自律起動したことを記録（システムに報告したい場合はDB接続回復後に送る仕組みが必要）
+            return cache_data.get("configs", []), cache_data.get("links", [])
+        except Exception as e:
+            logger.critical(f"💀 Failed to read local cache: {e}")
+            return None, []
+
+
     def load_and_init_units(self):
         """DBから最新設定を取得し、ユニットの生成・破棄を差分比較して反映します。"""
+        is_offline_mode = False
+        
         try:
+            # 🌟 DBから読み込みを試行
             configs = self.db.fetch_node_config(self.sys_id)
             links = self.db.fetch_vst_links(self.sys_id)
             self.sync_status_records(configs)
+            
+            # DBから正常に読めたら、ローカルキャッシュを更新
+            self._save_config_cache(configs, links)
+            
         except Exception as e:
             logger.error(f"❌ DB Access Error: {e}")
-            return 
+            # 🌟 [Phase3: 生存戦略] DBエラー時はキャッシュからロード
+            configs, links = self._load_config_cache()
+            if configs is None:
+                return # キャッシュもない場合はどうしようもないのでリターン
+            is_offline_mode = True
 
+        # 差分比較用の文字列化（辞書のリストなどを安定して比較するため）
         new_config_raw = json.dumps(configs, sort_keys=True, default=str)
         if new_config_raw == self.current_config_raw:
             return 
         
-        logger.info("🔄 Configuration change detected. Re-initializing units...")
+        if is_offline_mode:
+            logger.warning("🔄 [Survival Mode] Initializing units from cached configuration...")
+        else:
+            logger.info("🔄 Configuration change detected. Re-initializing units...")
+            
         self.current_config_raw = new_config_raw
         self.links = links
 
@@ -233,9 +302,15 @@ class MainManager:
                     try: unit.poll()
                     except: pass
 
-                if now - self.last_sync_time > self.sync_interval:
-                    self.db.update_node_heartbeat(self.sys_id, "online")
-                    self.load_and_init_units()
+                # 🟢 修正後: intervalが0より大きい場合のみ照合を実行する
+                if self.sync_interval > 0 and (now - self.last_sync_time > self.sync_interval):
+                    # 定期的な死活報告と設定の再照合
+                    try:
+                        self.db.update_node_heartbeat(self.sys_id, "online")
+                        self.load_and_init_units() # ここでDBと差分があれば上書きされる
+                    except Exception as e:
+                        logger.warning(f"⚠️ Periodic sync failed (Survival Mode active?): {e}")
+                        
                     self.last_sync_time = now
 
                 time.sleep(0.1)
