@@ -1,24 +1,13 @@
 /**
- * =========================================================
- * WildLink Event Standard (WES) 2026 準拠
- * コンポーネント: MotionUnit Plugin (人感センサーUI)
- * 役割:
- * 1. センサー状態のリアルタイム表示 (MQTTイベント駆動)
- * 2. Nodeに対する動作設定パッチ (val_enabled, val_interval, act_rec) の生成と送信
- * 3. ブラウザローカルでの通知音再生
- * =========================================================
- */
-
-/**
  * WES 2026: MotionUnit (9.5-inch Half Rack Style)
+ * 完全イベント駆動モデル: 操作はAPIへ送信するのみ。UIの更新はMQTTの受信をトリガーとする。
  */
 class MotionUnit extends VstUnitBase {
     constructor(conf, manager) {
         super(conf, manager);
         this.roleName = conf.vst_role_name;
 
-        // --- 状態の優先順位（真実の反映） ---
-        // MQTTの boolean と DBの 1/0 両方に対応
+        // UI内部の保持状態
         this.val_enabled = (conf.val_enabled === true || parseInt(conf.val_enabled) === 1);
         this.act_rec = (conf.act_rec === true || parseInt(conf.act_rec) === 1);
         this.val_interval = parseFloat(conf.val_interval || 15.0);
@@ -26,20 +15,16 @@ class MotionUnit extends VstUnitBase {
         this.soundEnabled = false;
         this.selectedSound = "beep";
         this.sounds = {
-            beep: "https://actions.google.com/sounds/v1/alarms/beep_short.ogg",
-            alarm: "https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg"
+            beep: "https://actions.google.com/sounds/v1/alarms/beep_short.ogg"
         };
         this.lastDetectTime = "---";
     }
 
-    /**
-     * UIの描画と初期イベントの登録を行います。
-     */
     initUI() {
         const content = document.getElementById(`content-${this.roleName}`);
         if (!content) return;
 
-        // 19インチ・ハーフラック風の高密度レイアウト
+        // リセットボタンを追加、デザインを整理
         content.innerHTML = `
             <div class="vst-rack-panel d-flex flex-column gap-1 p-1">
                 <div class="d-flex justify-content-between align-items-center px-2 py-1 bg-black border border-secondary rounded-top">
@@ -77,24 +62,27 @@ class MotionUnit extends VstUnitBase {
                     </div>
                 </div>
 
-                <button class="btn btn-primary btn-sm w-100 py-1 font-monospace" id="btn-apply-${this.roleName}" style="font-size:0.65rem; border-radius:0 0 2px 2px;">
-                    <i class="fas fa-terminal me-1"></i> APPLY CONFIG
-                </button>
+                <div class="d-flex gap-1 mt-1">
+                    <button class="btn btn-warning btn-sm py-1 font-monospace" id="btn-reset-${this.roleName}" style="font-size:0.65rem; width:40px;" title="Reset to Default">
+                        <i class="fas fa-undo"></i>
+                    </button>
+                    <button class="btn btn-primary btn-sm flex-grow-1 py-1 font-monospace" id="btn-apply-${this.roleName}" style="font-size:0.65rem;">
+                        <i class="fas fa-terminal me-1"></i> APPLY CONFIG
+                    </button>
+                </div>
             </div>
         `;
 
         this.updateVisualState();
 
-        // イベント登録
         document.getElementById(`btn-apply-${this.roleName}`).onclick = () => this.applySettings();
+        document.getElementById(`btn-reset-${this.roleName}`).onclick = () => this.resetSettings();
         document.getElementById(`snd-sw-${this.roleName}`).onchange = (e) => this.soundEnabled = e.target.checked;
+        
+        // スイッチを操作した際は見た目だけ即座に変える(体感速度のため)が、DB確定までは未完了
         document.getElementById(`en-sw-${this.roleName}`).onchange = () => this.updateVisualState();
     }
 
-    /**
-     * UIの見た目を現在の val_enabled (画面のスイッチ状態) に合わせて更新する。
-     * ※重複していたメソッドを統合し、全要素(LED、ステータス、背景色)の変更をカバーしました。
-     */
     updateVisualState() {
         const isEnabled = document.getElementById(`en-sw-${this.roleName}`).checked;
         const pluginEl = document.getElementById(`plugin-${this.roleName}`);
@@ -105,13 +93,12 @@ class MotionUnit extends VstUnitBase {
         if (isEnabled) {
             if (pluginEl) pluginEl.classList.remove('unit-disabled');
             if (ledEl) ledEl.className = 'status-led led-on';
-            if (statEl) { 
+            if (statEl && statEl.innerText !== "DETECTED") { 
                 statEl.innerText = "SCANNING"; 
                 statEl.style.color = "var(--accent-green)"; 
             }
-            if (display) display.style.background = "#0a1a0a"; // 稼働中っぽいうっすら緑
+            if (display && display.style.boxShadow === "none") display.style.background = "#0a1a0a";
         } else {
-            // Disable時も明るく表示するが、背景をグレーにして「待機感」を出す
             if (pluginEl) pluginEl.classList.add('unit-disabled');
             if (ledEl) ledEl.className = 'status-led led-off';
             if (statEl) { 
@@ -122,14 +109,8 @@ class MotionUnit extends VstUnitBase {
         }
     }
 
-    /**
-     * システム設定をひとまとめにしてAPI(Hub)へ送信する
-     * WES 2026: 設定の差分(パッチ)を cmd_json に格納して投げる
-     */
     async applySettings() {
         const btn = document.getElementById(`btn-apply-${this.roleName}`);
-        
-        // 画面の入力値を取得
         const isEnabled = document.getElementById(`en-sw-${this.roleName}`).checked;
         const isRec     = document.getElementById(`rec-sw-${this.roleName}`).checked;
         const interval  = parseFloat(document.getElementById(`int-val-${this.roleName}`).value);
@@ -138,64 +119,83 @@ class MotionUnit extends VstUnitBase {
         btn.innerText = "SAVING...";
 
         try {
-            // APIへ送信するフォームデータの構築
             const formData = new URLSearchParams();
             formData.append('sys_id', this.manager.nodeId);
             formData.append('cmd_type', 'update_config');
-            
-            // 🌟 WESマニフェスト: パッチ形式で cmd_json を構築
-            const cmdJson = {
+            formData.append('cmd_json', JSON.stringify({
                 role: this.roleName,
                 val_enabled: isEnabled ? 1 : 0,
                 act_rec: isRec ? 1 : 0,
                 val_interval: interval
-            };
-            formData.append('cmd_json', JSON.stringify(cmdJson));
+            }));
 
-            // 送信
             await fetch('api/send_cmd.php', { method: 'POST', body: formData });
-            
-            // UI内部状態の更新
-            this.val_enabled = isEnabled;
-            this.act_rec = isRec;
-            this.val_interval = interval;
-            
-            // 見た目の更新（PAUSED切り替えなど）
-            this.updateVisualState();
-
-            // 成功フィードバック
-            btn.classList.replace('btn-primary', 'btn-success');
-            btn.innerHTML = `<i class="fas fa-check me-1"></i> UPDATED!`;
-            setTimeout(() => {
-                btn.classList.replace('btn-success', 'btn-primary');
-                btn.innerHTML = `<i class="fas fa-upload me-1"></i> APPLY TO NODE`;
-                btn.disabled = false;
-            }, 2000);
-
+            // ※ ここではthis.val_enabled等は上書きしない。MQTTからの完了通知で書き換える。
         } catch (e) {
-            console.error("[MotionUnit] Failed to apply settings:", e);
             btn.classList.replace('btn-primary', 'btn-danger');
             btn.innerText = "ERROR";
-            setTimeout(() => {
-                btn.classList.replace('btn-danger', 'btn-primary');
-                btn.innerHTML = `<i class="fas fa-upload me-1"></i> APPLY TO NODE`;
-                btn.disabled = false;
-            }, 2000);
+            setTimeout(() => { btn.classList.replace('btn-danger', 'btn-primary'); btn.innerText = "APPLY CONFIG"; btn.disabled = false; }, 2000);
+        }
+    }
+
+    async resetSettings() {
+        const btn = document.getElementById(`btn-reset-${this.roleName}`);
+        if(!confirm("Restore default settings for this unit?")) return;
+        
+        btn.disabled = true;
+        try {
+            const formData = new URLSearchParams();
+            formData.append('sys_id', this.manager.nodeId);
+            formData.append('cmd_type', 'reset_config'); // 新設のHub用コマンド
+            formData.append('cmd_json', JSON.stringify({ role: this.roleName }));
+            await fetch('api/send_cmd.php', { method: 'POST', body: formData });
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setTimeout(() => { btn.disabled = false; }, 2000);
         }
     }
 
     /**
-     * MQTTからブロードキャストされたイベントを受け取る (VstManagerから呼ばれる)
-     * @param {Object} data - 受信したイベントペイロード
+     * 🌟 新規：NodeからMQTTで状態が報告された際に呼ばれる (WES 2026 真実同期)
      */
-    onEvent(data) {
-        console.log(`[MotionUnit] Event Received (${this.roleName}):`, data); // 🚀 デバッグログ
+    update(data) {
+        // cmd_status が completed、かつ自身のロールに関する更新であればUIに反映
+        if (data.cmd_status === 'completed' && data.log_ext) {
+            const ext = data.log_ext;
+            
+            // 値の適用
+            if (ext.val_enabled !== undefined) {
+                this.val_enabled = (ext.val_enabled === 1 || ext.val_enabled === true);
+                document.getElementById(`en-sw-${this.roleName}`).checked = this.val_enabled;
+            }
+            if (ext.act_rec !== undefined) {
+                this.act_rec = (ext.act_rec === 1 || ext.act_rec === true);
+                document.getElementById(`rec-sw-${this.roleName}`).checked = this.act_rec;
+            }
+            if (ext.val_interval !== undefined) {
+                this.val_interval = ext.val_interval;
+                document.getElementById(`int-val-${this.roleName}`).value = this.val_interval;
+            }
 
-        // UI上のスイッチがOFFなら、検知アニメーションをスキップ
-        if (!this.val_enabled) {
-            console.log("[MotionUnit] Unit is disabled in UI, ignoring event.");
-            return;
+            this.updateVisualState();
+
+            // APPLYボタンの成功状態リセット
+            const btn = document.getElementById(`btn-apply-${this.roleName}`);
+            if (btn && btn.disabled) {
+                btn.classList.replace('btn-primary', 'btn-success');
+                btn.innerHTML = `<i class="fas fa-check me-1"></i> VERIFIED!`;
+                setTimeout(() => {
+                    btn.classList.replace('btn-success', 'btn-primary');
+                    btn.innerHTML = `<i class="fas fa-terminal me-1"></i> APPLY CONFIG`;
+                    btn.disabled = false;
+                }, 2000);
+            }
         }
+    }
+
+    onEvent(data) {
+        if (!this.val_enabled) return;
 
         if (data.event === 'motion_detected' || data.val_status === 'detected') {
             this.handleDetection(data);
@@ -204,46 +204,35 @@ class MotionUnit extends VstUnitBase {
         }
     }
 
-    /**
-     * 動体検知時の画面描画とサウンド再生
-     */
     handleDetection(data) {
         const icon = document.getElementById(`icon-${this.roleName}`);
         const stat = document.getElementById(`stat-${this.roleName}`);
         const timeEl = document.getElementById(`time-${this.roleName}`);
         const display = document.getElementById(`display-${this.roleName}`);
 
-        // 検知時刻の更新 (日本のタイムゾーン JST のフォーマットで表示)
         if (data.env_last_detect) {
             this.lastDetectTime = new Date(data.env_last_detect).toLocaleTimeString('ja-JP');
             if (timeEl) timeEl.innerText = this.lastDetectTime;
         }
 
-        // 赤色点滅エフェクト
         if (icon) { icon.style.color = "var(--accent-red)"; icon.classList.add('vst-blink'); }
         if (stat) { stat.innerText = "DETECTED"; stat.style.color = "var(--accent-red)"; }
         if (display) display.style.boxShadow = "inset 0 0 15px rgba(220,53,69,0.5)";
 
-        // ビープ音再生
         if (this.soundEnabled) {
             new Audio(this.sounds[this.selectedSound]).play().catch(() => {});
         }
     }
 
-    /**
-     * インターバル経過後の画面リセット処理
-     */
     handleReset() {
         const icon = document.getElementById(`icon-${this.roleName}`);
         const stat = document.getElementById(`stat-${this.roleName}`);
         const display = document.getElementById(`display-${this.roleName}`);
 
-        // 緑色のスキャン状態に戻す
         if (icon) { icon.style.color = "var(--text-dim)"; icon.classList.remove('vst-blink'); }
         if (stat) { stat.innerText = "SCANNING"; stat.style.color = "var(--accent-green)"; }
         if (display) display.style.boxShadow = "none";
     }
 }
 
-// VstManager へプラグインを登録 (これを忘れると初期化されない)
 VstManager.registerPlugin('motion', MotionUnit);

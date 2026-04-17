@@ -1,5 +1,5 @@
 {
-  "timestamp": 1776357115.4135795,
+  "timestamp": 1776435110.1125348,
   "configs": [
     {
       "vst_type": "camera",
@@ -48,10 +48,10 @@
     {
       "vst_type": "sns_motion",
       "val_params": {
-        "val_interval": 9,
-        "save_db": true,
-        "act_line": true,
-        "act_rec": 0
+        "val_interval": 10,
+        "act_db": 1,
+        "act_line": 1,
+        "act_rec": 1
       },
       "is_active": 1,
       "vst_role_name": "sns_move",

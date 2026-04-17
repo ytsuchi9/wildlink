@@ -1,3 +1,11 @@
+/**
+ * WES 2026: VST Rack Style Guide
+ * コンセプト: 19インチラックマウント・システム
+ */
+
+/* ==========================================================================
+   1. Base Variables & Global (システム全体の色とフォント)
+   ========================================================================== */
 :root {
     --bg-dark: #121212;
     --panel-bg: #1e1e1e;
@@ -17,6 +25,9 @@ body {
     padding: 20px;
 }
 
+/* ==========================================================================
+   2. Header & Vitals (上部のヘッダーとシステム状態表示)
+   ========================================================================== */
 header {
     border-bottom: 2px solid #333;
     padding-bottom: 10px;
@@ -29,31 +40,37 @@ header {
 h1 { margin: 0; font-size: 1.5rem; }
 h1 small { color: var(--accent-blue); font-size: 0.8rem; }
 
-/* System Vitals Bar */
 .vital-unit { display: flex; gap: 20px; font-size: 0.9rem; }
 .vital-item span { color: var(--accent-green); font-weight: bold; }
 
-/* Plugin Rack */
+/* ==========================================================================
+   3. Rack Layout (CSS Grid による動的レスポンシブ配置)
+   ========================================================================== */
 #vst-rack {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    /* 1つのユニットの最小幅を320px(ハーフラック想定)とし、画面幅に応じて自動で列を増減 */
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     gap: 15px;
 }
 
-/* Base Plugin Style */
+/* ==========================================================================
+   4. Unit Base Design (各プラグインの共通外装)
+   ========================================================================== */
 .vst-plugin {
     background: var(--panel-bg);
-    border-left: 4px solid #444;
+    border-left: 4px solid #444; /* 非アクティブ時のデフォルト枠線 */
     border-radius: 4px;
     padding: 10px;
     box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     transition: all 0.3s ease;
 }
 
-/* State Modifiers */
-.vst-plugin.u-active { border-left-color: var(--accent-green); box-shadow: 0 0 10px rgba(40,167,69,0.2); }
-.vst-plugin.u-error { border-left-color: var(--accent-red); }
-.unit-disabled { opacity: 0.5; filter: grayscale(1); }
+/* ユニット無効時の透過度と色調（真っ黒にせず、稼働準備状態を示す） */
+.vst-plugin.unit-disabled {
+    opacity: 0.8;
+    background: #141414;
+    border-left-color: #333 !important;
+}
 
 .plugin-header {
     display: flex;
@@ -70,113 +87,15 @@ h1 small { color: var(--accent-blue); font-size: 0.8rem; }
     border-radius: 3px;
     color: var(--accent-blue);
 }
-
 .plugin-role { font-weight: bold; }
 
-/* Content Areas */
-.status-text { text-align: right; font-size: 0.8rem; height: 1.2rem; margin-bottom: 5px; }
-
-/* Logger Specific */
-.log-viewer-area {
-    background: #000;
-    height: 150px;
-    overflow-y: auto;
-    font-size: 0.75rem;
-    padding: 5px;
-    border-radius: 2px;
-    border: 1px solid #333;
-}
-
-.log-entry { margin: 0 0 5px 0; border-bottom: 1px solid #111; color: #0f0; white-space: pre-wrap; }
-.log-placeholder { color: #444; text-align: center; margin-top: 60px; }
-
-/* Controls */
-.vst-controls { margin-top: 10px; }
-.btn-group .btn { border-radius: 0; }
-
-
-/* --- 人感センサー 追加分 web/js/plugins/motion-unit.js --- */
-
-/* ラックユニット全体の共通定義 */
-.vst-rack-unit {
+/* ==========================================================================
+   5. Motion Unit Specific (MotionUnit内の個別デザイン)
+   ========================================================================== */
+.vst-rack-panel {
     background: #1a1a1a;
     border-radius: 2px;
 }
-
-/* ユニットが無効な時の表現 */
-/* 以前の grayscale ではなく、背景を少し暗くし、枠線を暗くする程度に留める */
-.vst-plugin.unit-disabled {
-    opacity: 1; /* 明るさは維持 */
-    background: #141414;
-    border-left-color: #333 !important;
-}
-
-.unit-disabled .rack-side-display {
-    background: #000;
-    border-color: #222;
-}
-
-/* 設定パネル内のスイッチや入力項目をより「機器」っぽく */
-.form-switch .form-check-input {
-    cursor: pointer;
-}
-
-.form-switch .form-check-input:checked {
-    background-color: var(--accent-green);
-    border-color: var(--accent-green);
-}
-
-/* APPLYボタンの「PUSH感」 */
-.btn-primary {
-    border: none;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 2px 4px rgba(0,0,0,0.5);
-}
-
-.btn-primary:active {
-    transform: translateY(1px);
-    box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
-}
-
-
-
-/* 検知時のボーダー強調 */
-.vst-plugin.u-error {
-    border-left: 6px solid var(--accent-red) !important;
-    box-shadow: 0 0 15px rgba(220, 53, 69, 0.4);
-    background: rgba(220, 53, 69, 0.05);
-}
-
-/* 点滅アニメーション */
-.vst-blink {
-    animation: blink-red 0.8s infinite;
-}
-
-@keyframes blink-red {
-    0% { opacity: 1; }
-    50% { opacity: 0.3; }
-    100% { opacity: 1; }
-}
-@keyframes blinker {
-    50% { opacity: 0.2; }
-}
-
-/* 小さいボタン用の微調整 */
-.btn-xs {
-    padding: 1px 5px;
-    font-size: 0.7rem;
-}
-
-/* 無効化時のスタイル（既存の unit-disabled を強化） */
-/* ユニット無効時の透過度調整（ご要望通り明るめに） */
-.unit-disabled {
-    opacity: 0.9 !important;
-    border-left-color: #444 !important;
-}
-.unit-disabled .settings-panel {
-    filter: none; /* 設定パネルは操作しやすく */
-}
-
-
 
 /* ステータスLED */
 .status-led {
@@ -185,15 +104,16 @@ h1 small { color: var(--accent-blue); font-size: 0.8rem; }
     border-radius: 50%;
     border: 1px solid #000;
 }
-.led-on {
-    background-color: #00ff00;
-    box-shadow: 0 0 5px #00ff00;
-}
-.led-off {
-    background-color: #330000;
+.led-on { background-color: #00ff00; box-shadow: 0 0 5px #00ff00; }
+.led-off { background-color: #330000; }
+
+/* 中央のモニタ表示エリア */
+.rack-display {
+    transition: background 0.5s ease;
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
 }
 
-/* ラック内のパラメータ行 */
+/* 右側のパラメータ入力行 */
 .rack-param-row {
     display: flex;
     justify-content: space-between;
@@ -205,8 +125,27 @@ h1 small { color: var(--accent-blue); font-size: 0.8rem; }
     border-radius: 2px;
 }
 
-/* 表示エリアの質感 */
-.rack-display {
-    transition: background 0.5s ease;
-    box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
+/* スイッチとボタンの「ハードウェア感」を強調 */
+.form-switch .form-check-input { cursor: pointer; }
+.form-switch .form-check-input:checked {
+    background-color: var(--accent-green);
+    border-color: var(--accent-green);
+}
+
+.btn-primary {
+    border: none;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 2px 4px rgba(0,0,0,0.5);
+}
+.btn-primary:active {
+    transform: translateY(1px);
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+}
+
+/* 検知時のアニメーション */
+.vst-blink { animation: blink-red 0.8s infinite; }
+
+@keyframes blink-red {
+    0% { opacity: 1; }
+    50% { opacity: 0.3; }
+    100% { opacity: 1; }
 }

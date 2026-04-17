@@ -18,6 +18,10 @@ class WildLinkVSTBase:
         self.vst_role_name = role 
         self.role = role 
         self.params = params or {}
+
+        # 🌟 修正: paramsから vst_type を取得（なければ role を代用）
+        self.vst_type = self.params.get("vst_type", "unknown")
+
         self.mqtt = mqtt_client
         self.event_callback = event_callback
         
@@ -35,9 +39,21 @@ class WildLinkVSTBase:
         if isinstance(self.params, dict):
             self.log_ext = self.params.get("log_ext", {})
             for key, value in self.params.items():
-                if any(key.startswith(pre) for pre in ["val_", "hw_", "net_"]):
+                if any(key.startswith(pre) for pre in ["val_", "hw_", "net_", "act_"]):
                     setattr(self, key, value)
+                    
+            # 🌟 vst_type も明示的にセット（paramsにあれば優先）
+            if "vst_type" in self.params:
+                self.vst_type = self.params["vst_type"]
 
+        # 🌟 修正: 最後に自分自身で boot を叫ぶ
+        # これにより、全ての継承クラスで個別に書く必要がなくなります
+        self.send_event("boot", {
+            "log_msg": f"VST Unit [{self.role}] started.",
+            "vst_type": self.vst_type
+        })
+
+        logger.info(f"🚀 [{self.role}] VST Base initialized and boot event sent.")
         logger.debug(f"[{self.role}] VST Unit Instance created (ID: {self.sys_id})")
 
     def control(self, payload):

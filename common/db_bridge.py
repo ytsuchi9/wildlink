@@ -157,6 +157,32 @@ class DBBridge:
         """
         return self.execute(sql, (sys_id, level, log_msg, log_code, ext_json))
 
+    def insert_node_data(self, sys_id, vst_role_name, payload):
+        """
+        センサー等の測定値や検知履歴を node_data テーブルに保存します。
+        マニフェストの命名規則 (env_, log_msg) に従いペイロードから抽出します。
+        """
+        # 環境データがあれば抽出（今回は動体検知なので None になる想定）
+        env_temp = payload.get('env_temp')
+        env_hum = payload.get('env_hum')
+        env_pres = payload.get('env_pres')
+        env_lux = payload.get('env_lux')
+        
+        # ログメッセージと生データ(JSON)
+        log_msg = payload.get('log_msg', f"Data recorded from {vst_role_name}")
+        raw_data_json = json.dumps(payload, ensure_ascii=False)
+
+        sql = """
+            INSERT INTO node_data 
+            (sys_id, vst_role_name, env_temp, env_hum, env_pres, env_lux, log_msg, raw_data)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        return self.execute(sql, (
+            sys_id, vst_role_name, 
+            env_temp, env_hum, env_pres, env_lux, 
+            log_msg, raw_data_json
+        ))
+
     # --- ⚙️ 設定・ノード状態管理 ---
 
     def update_node_heartbeat(self, sys_id, status="online"):

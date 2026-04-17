@@ -122,8 +122,38 @@ class WildLinkHubManager:
             elif msg_type == 'event':
                 event_name = payload.get('event')
                 logger.info(f"📥 [event] {sys_id}:{vst_role} -> {event_name}")
+
+                # 1. システムログへの記録 (常に実行)
                 self.db.insert_event_log(sys_id, vst_role, payload)
 
+                # --- 🌟 追加: 起動時（boot）の設定同期ロジック ---
+                if event_name == "boot":
+                    logger.info(f"🚀 [boot] Node {sys_id}:{vst_role} joined. Sending latest config...")
+                    # DBから最新設定を取得
+                    # fetch_node_config 等を使用して、このノード・役割の設定を抽出
+                    node_configs = self.db.fetch_node_config(sys_id) 
+                    
+                    # 対象の vst_role に合致する設定を探して送信
+                    for cfg in node_configs:
+                        if cfg['vst_role_name'] == vst_role:
+                            # 2026年仕様: act_ や val_ を含む cmd_json を作成
+                            cmd_json = cfg.get('val_params', {})
+                            # コマンドを発行 (target_role 宛に config_update を投げる)
+                            self._send_command_to_node(sys_id, vst_role, "config_update", cmd_json)
+                    retur
+
+                # 2. node_data (履歴) への記録
+                # マニフェスト準拠: act_db (旧 save_db) が 1 (または True) なら記録する
+                act_db = payload.get('act_db', payload.get('save_db', 0))
+                
+                if act_db == 1 or act_db is True:
+                    success = self.db.insert_node_data(sys_id, vst_role, payload)
+                    if success:
+                        logger.info(f"💾 [DB] Node data saved to node_data for {vst_role}.")
+                    else:
+                        logger.error(f"❌ [DB] Failed to save node_data for {vst_role}.")
+
+                # 3. UIのキック処理など
                 if event_name in ["streaming_started", "stream_ready"]:
                     self._kick_ui_panel(sys_id, vst_role, payload)
 
