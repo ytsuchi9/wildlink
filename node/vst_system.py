@@ -40,7 +40,7 @@ class VST_System(WildLinkVSTBase):
         cmd_id = payload.get("ref_cmd_id")
 
         if action == "reboot":
-            logger.warning(f"⚠️ [System] Rebooting system by command {cmd_id}")
+            logger.warning(f"⚠️ [System] Reing system by command {cmd_id}")
             if cmd_id:
                 self.db.finalize_command(cmd_id, "completed", log_msg="System reboot initiated")
             # 実行猶予を持たせて再起動

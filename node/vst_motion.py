@@ -21,7 +21,8 @@ class VST_Motion(WildLinkVSTBase):
 
         # self.act_rec = (int(self.params.get('act_rec', 0)) == 1)
         
-        self.env_last_detect_time = 0
+        # 🌟 修正: コメントアウトを外し、初期値を明示的にセット（poll時のクラッシュ防止）
+        self.env_last_detect_time = 0.0
 
         try: 
             GPIO.setmode(GPIO.BCM)
@@ -66,13 +67,16 @@ class VST_Motion(WildLinkVSTBase):
         iso_time = datetime.now().isoformat()
         
         # 4. Hubへのイベント送信 (Hub側での各種アクション発動判定用)
+        # 🌟 act_rec_mode の評価 (1:検知時のみ, 2:状態変化すべて)
+        act_db_flag = 1 if getattr(self, 'act_rec_mode', 0) in [1, 2] else 0
+        
+        # 🌟 is_observation=True で送り、生データをスリム化する
         self.send_event("motion_detected", {
             "env_last_detect": iso_time,
-            # ここも getattr を使って、確実に最新の self から取得する
-            "act_db": 1 if getattr(self, 'act_db', 0) else 0,     # DB記録用
-            "act_rec": 1 if getattr(self, 'act_rec', 0) else 0,   # 録画指示用
-            "act_line": 1 if getattr(self, 'act_line', 0) else 0  # LINE通知用
-        })
+            "act_db": act_db_flag,
+            "act_rec": 1 if getattr(self, 'act_rec', 0) else 0,
+            "act_line": 1 if getattr(self, 'act_line', 0) else 0
+        }, is_observation=True)
 
     def execute_logic(self, data):
         """WES 2026: 設定パッチの動的適用と完全状態の返却"""
@@ -84,18 +88,31 @@ class VST_Motion(WildLinkVSTBase):
             # 1. パッチ適用 (cmd_jsonの内容を自身の属性へ自動反映)
             updated_keys = []
             for key, value in data.items():
-                if hasattr(self, key) and key.startswith(('val_', 'act_')):
-                    if isinstance(getattr(self, key), bool) and not isinstance(value, bool):
-                        value = (int(value) == 1)
-                    setattr(self, key, value)
-                    updated_keys.append(key)
+                # 🌟 sys_ もパッチで書き換えられるように追加 (sys_log_level対応)
+                if hasattr(self, key) and key.startswith(('val_', 'act_', 'sys_')):
+                    # 🌟 修正: 既存の属性の「型」を取得し、安全にキャスト（変換）して代入する
+                    current_val = getattr(self, key)
+                    expected_type = type(current_val)
+                    
+                    try:
+                        if isinstance(current_val, bool):
+                            # bool型の場合は特別処理 (1, "1", "true" などを True に)
+                            new_val = str(value).lower() in ['1', 'true', 'yes']
+                        else:
+                            # 既存の型（int, float, strなど）に合わせてキャスト
+                            new_val = expected_type(value)
+                            
+                        setattr(self, key, new_val)
+                        updated_keys.append(key)
+                    except ValueError:
+                        logger.warning(f"⚠️ Type casting failed for {key}: expected {expected_type}, got {value}")
 
             logger.info(f"⚙️ [{self.role}] Patched: {', '.join(updated_keys)}")
 
             # 2. 全パラメータの抽出 (UIと同期するための log_ext を生成)
             current_params = {
                 k: v for k, v in vars(self).items() 
-                if k.startswith(('val_', 'act_', 'env_'))
+                if k.startswith(('val_', 'act_', 'env_', 'sys_'))
             }
 
             # 3. 完了報告 (これがMQTT経由でUIに届き、画面が更新される)
@@ -114,7 +131,15 @@ class VST_Motion(WildLinkVSTBase):
 
     def on_idle_reset(self):
         self.update_status(val_status="idle", log_code=200)
-        self.send_event("status_changed", {"log_time": datetime.now().isoformat()})
+
+        # 🌟 act_rec_mode が 2(状態変化すべて) の時だけ DB保存指示を出す
+        act_db_flag = 1 if getattr(self, 'act_rec_mode', 0) == 2 else 0
+
+        self.send_event("status_changed", {
+            "log_time": datetime.now().isoformat(),
+            "act_db": act_db_flag
+        }, is_observation=True)
+        
         logger.debug(f"ℹ️ [{self.role}] Reset to idle")
 
     def stop(self):

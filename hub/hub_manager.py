@@ -140,7 +140,7 @@ class WildLinkHubManager:
                             cmd_json = cfg.get('val_params', {})
                             # コマンドを発行 (target_role 宛に config_update を投げる)
                             self._send_command_to_node(sys_id, vst_role, "config_update", cmd_json)
-                    retur
+                    return
 
                 # 2. node_data (履歴) への記録
                 # マニフェスト準拠: act_db (旧 save_db) が 1 (または True) なら記録する
@@ -190,6 +190,19 @@ class WildLinkHubManager:
                 
         except Exception as e:
             logger.error(f"❌ Dispatcher Error: {e}")
+
+    def _send_command_to_node(self, sys_id, role, action, params):
+        topic = f"{MQTT_PREFIX}/{GROUP_ID}/{sys_id}/{role}/cmd"
+        
+        # 基本のペイロード
+        payload = {"action": action, "cmd_id": 0}
+        
+        # 🌟 params（辞書）の中身を payload 直下に展開（平坦化）する
+        if isinstance(params, dict):
+            payload.update(params)
+            
+        # ※ Hub側はPaho-MQTTを直接叩いているため json.dumps が必要です
+        self.client.publish(topic, json.dumps(payload, ensure_ascii=False))
 
     def _handle_command_lifecycle(self, cmd_id, status, payload):
         """コマンドの進行状況(ACK, 完了, エラー)を判定し、DBのステータスを更新します。"""

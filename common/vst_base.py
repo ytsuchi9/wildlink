@@ -36,10 +36,14 @@ class WildLinkVSTBase:
         self.val_enabled = self.params.get("val_enabled", True)
         self.ref_cmd_id = 0            
         
+        # 🌟 マニフェスト拡張: ログレベルと記録モードの初期化
+        self.sys_log_level = int(self.params.get("sys_log_level", 1)) # 0:Errorのみ, 1:Info含む, 2:Debugフル
+        self.act_rec_mode = int(self.params.get("act_rec_mode", 1))   # 0:記録OFF, 1:トリガーON時のみ, 2:状態変化すべて, 3:定期
+
         if isinstance(self.params, dict):
             self.log_ext = self.params.get("log_ext", {})
             for key, value in self.params.items():
-                if any(key.startswith(pre) for pre in ["val_", "hw_", "net_", "act_"]):
+                if any(key.startswith(pre) for pre in ["val_", "hw_", "net_", "act_", "sys_", "env_"]):
                     setattr(self, key, value)
                     
             # 🌟 vst_type も明示的にセット（paramsにあれば優先）
@@ -118,25 +122,53 @@ class WildLinkVSTBase:
         else:
             logger.debug(f"[{self.role}] No active command ID to finalize.")
 
-    def send_event(self, event_name, extra_data=None, log_ext=None):
-        """自発的なイベント通知。Phase 2対応で log_ext も引数として受け入れ可能に。"""
-        # イベント発生時に最新パラメータを更新したい場合に備え、update_status を経由
+    def get_slim_payload(self):
+        """🌟 新規: node_data(観測データ)用に環境変数(env_)とアクション(act_)のみを抽出してスリム化"""
+        data = {
+            "vst_role_name": self.vst_role_name, 
+            "sys_id": self.sys_id,
+            "val_status": self.val_status
+        }
+        for key, value in self.__dict__.items():
+            if key.startswith(('env_', 'act_')):
+                if isinstance(value, (str, int, float, bool, list, dict)) or value is None:
+                    data[key] = value
+        return data
+
+    def send_event(self, event_name, extra_data=None, log_ext=None, is_observation=False):
+        """
+        自発的なイベント通知。
+        🌟 is_observation=True の場合は node_data 用にスリム化された raw_data を送信します。
+        """
         if log_ext:
             self.update_status(log_ext=log_ext)
 
-        event_payload = self.report()
+        # ペイロードの切り替え (冗長なシステムデータを除外するかどうか)
+        if is_observation:
+            event_payload = self.get_slim_payload()
+        else:
+            event_payload = self.report()
+            
         event_payload["event"] = event_name
         if extra_data: event_payload.update(extra_data)
 
         self.notify_manager("event_fired", event_payload)
         
-        # DBのイベントログへ保存
-        self.db.insert_event_log(self.sys_id, self.vst_role_name, {
-            "log_level": self.get_level_from_code(self.log_code),
-            "log_msg": f"Event: {event_name} - {self.log_msg}",
-            "log_code": self.log_code,
-            "event_data": event_payload
-        })
+        # system_logs への書き込みは sys_log_level で取捨選択
+        current_level_str = self.get_level_from_code(self.log_code)
+        should_log = True
+        
+        if self.sys_log_level == 0 and current_level_str != "error":
+            should_log = False # エラーレベル0の時はエラー以外無視
+
+        # 観測データ(is_observation)は system_logs には書かないように分離
+        if should_log and not is_observation:
+            self.db.insert_event_log(self.sys_id, self.vst_role_name, {
+                "log_level": current_level_str,
+                "log_msg": f"Event: {event_name} - {self.log_msg}",
+                "log_code": self.log_code,
+                "event_data": event_payload
+            })
 
     def update_status(self, val_status=None, log_code=None, log_ext=None):
         """自身の現在の物理状態をDBの node_status_current へ直接同期します。"""
@@ -191,7 +223,7 @@ class WildLinkVSTBase:
         params = {}
         # 自身の属性(self.__dict__)からプレフィックスに合致するものを抽出
         for attr_name, value in self.__dict__.items():
-            if attr_name.startswith(('val_', 'act_', 'env_')):
+            if attr_name.startswith(('val_', 'act_', 'env_', 'sys_')):
                 params[attr_name] = value
         return params
 
