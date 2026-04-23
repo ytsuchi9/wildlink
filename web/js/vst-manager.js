@@ -166,7 +166,9 @@ class VstManager {
     injectScript(path) {
         return new Promise((resolve) => {
             const script = document.createElement('script');
-            script.src = path;
+            // 🌟 開発用キャッシュ対策: 常に最新のJSを読み込む
+            script.src = path + "?t=" + new Date().getTime();
+            // script.src = path;
             script.onload = resolve;
             script.onerror = () => { console.error(`Failed to load: ${path}`); resolve(); };
             document.head.appendChild(script);
@@ -217,7 +219,12 @@ class VstManager {
             // [優先順位2] 登録がない場合、命名規則（例: CameraUnit）から window オブジェクト内を探す
             if (!TargetClass) {
                 const className = conf.vst_class.charAt(0).toUpperCase() + conf.vst_class.slice(1).toLowerCase() + "Unit";
-                TargetClass = window[className];
+                // 🌟 修正: ES6クラスは window に直接登録されないため eval で安全に取得を試みる
+                try {
+                    TargetClass = eval(className);
+                } catch (e) {
+                    /* 見つからない場合はスキップ */
+                }
             }
 
             // 4. インスタンス化と初期化

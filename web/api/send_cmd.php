@@ -63,8 +63,10 @@ try {
         "sys_id" => $sys_id
     ]);
 
-    // ※ .env等の構成によっては動的に読むのがベストですが、UIとHubが同居している前提で127.0.0.1
-    $broker_host = "127.0.0.1";
+    // 🌟【修正ポイント】: wildlink_core.php で初期化済みの $core インスタンスを利用し、
+    // .env から MQTT_HOST を取得する（未定義時は 127.0.0.1 にフォールバック）
+    global $core;
+    $broker_host = $core->getEnv('MQTT_HOST', '127.0.0.1');
     $escaped_topic = escapeshellarg($kick_topic);
     $escaped_payload = escapeshellarg($kick_payload);
     
