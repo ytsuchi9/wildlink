@@ -1,58 +1,14 @@
 {
-  "timestamp": 1776951338.0555773,
+  "timestamp": 1777047171.1739907,
   "configs": [
-    {
-      "vst_type": "camera",
-      "val_params": {
-        "val_res": "320x240",
-        "val_fps": 5
-      },
-      "is_active": 1,
-      "vst_role_name": "cam_main",
-      "hw_driver": "CSI_CAM",
-      "hw_bus_addr": null,
-      "val_unit_map": null,
-      "vst_class": "Camera",
-      "vst_module": "vst_camera"
-    },
-    {
-      "vst_type": "camera",
-      "val_params": {
-        "val_res": "320x240",
-        "val_fps": 5
-      },
-      "is_active": 1,
-      "vst_role_name": "cam_sub",
-      "hw_driver": "USB_CAM",
-      "hw_bus_addr": "/dev/video0",
-      "val_unit_map": null,
-      "vst_class": "Camera",
-      "vst_module": "vst_camera"
-    },
-    {
-      "vst_type": "sys_logger",
-      "val_params": {
-        "log_mode": "kick",
-        "val_interval": 300,
-        "log_path": "/var/log/mqtt_agent.log",
-        "max_lines": 20
-      },
-      "is_active": 1,
-      "vst_role_name": "log_sys",
-      "hw_driver": null,
-      "hw_bus_addr": null,
-      "val_unit_map": null,
-      "vst_class": "System",
-      "vst_module": "vst_system"
-    },
     {
       "vst_type": "sns_motion",
       "val_params": {
         "val_interval": 10,
         "act_db": 1,
-        "act_line": 1,
-        "act_rec": 0,
-        "act_rec_mode": 1
+        "act_line": 0,
+        "act_rec": 1,
+        "act_rec_mode": 0
       },
       "is_active": 1,
       "vst_role_name": "sns_move",
@@ -61,20 +17,6 @@
       "val_unit_map": null,
       "vst_class": "Motion",
       "vst_module": "vst_motion"
-    },
-    {
-      "vst_type": "switch",
-      "val_params": {
-        "act_target": "cam_main",
-        "val_interval": 10
-      },
-      "is_active": 1,
-      "vst_role_name": "sw_stream",
-      "hw_driver": "SW_PUSH",
-      "hw_bus_addr": "27",
-      "val_unit_map": null,
-      "vst_class": "Switch",
-      "vst_module": "vst_switch"
     }
   ],
   "links": [

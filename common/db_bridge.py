@@ -9,10 +9,20 @@ from datetime import datetime
 # 🌟 DBBridge専用のロガー（DBへの書き込みを行わず、コンソールのみ）
 db_logger = logging.getLogger("db_bridge_safe")
 if not db_logger.handlers:
-    handler = logging.StreamHandler()
+    # 1. コンソール出力用
+    stream_handler = logging.StreamHandler()
+    
+    # 2. ファイル出力用 (プロジェクトルートの logs/db_error.log に保存)
+    log_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "db_error.log")
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    file_handler = logging.FileHandler(log_file)
+    
     formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s - %(message)s')
-    handler.setFormatter(formatter)
-    db_logger.addHandler(handler)
+    stream_handler.setFormatter(formatter)
+    file_handler.setFormatter(formatter)
+    
+    db_logger.addHandler(stream_handler)
+    db_logger.addHandler(file_handler)
     db_logger.setLevel(logging.ERROR)
 
 class DBBridge:
@@ -54,10 +64,26 @@ class DBBridge:
 
     def execute(self, sql, params=None):
         """汎用実行メソッド (INSERT/UPDATE/DELETE用)。トランザクションをコミットします。"""
+        """辞書・リスト型が含まれる場合は自動でJSON文字列化します。"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor(buffered=True)
-            cursor.execute(sql, params or ())
+            
+            # 🌟 修正: パラメータの無害化（シリアライズ）
+            safe_params = []
+            if params:
+                for p in params:
+                    # 辞書型またはリスト型ならJSON文字列に変換
+                    if isinstance(p, (dict, list)):
+                        safe_params.append(json.dumps(p, ensure_ascii=False))
+                    # Boolean型はMySQLのTINYINT(1/0)に合わせて変換
+                    elif isinstance(p, bool):
+                        safe_params.append(1 if p else 0)
+                    else:
+                        safe_params.append(p)
+
+            cursor.execute(sql, tuple(safe_params) if safe_params else ())
+            
             if not sql.strip().upper().startswith("SELECT"):
                 conn.commit()
             cursor.close()

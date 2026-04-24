@@ -56,7 +56,7 @@ try {
     // 4. MQTTでHubへ「キック(合図)」を送信する
     // 🌟【修正ポイント】: 直接Node宛のトピック(wildlink/...)には送らず、
     // Hubの目覚まし用トピック(system/hub/kick)に通知だけを送る。
-    $kick_topic = "system/hub/kick";
+$kick_topic = "system/hub/kick";
     $kick_payload = json_encode([
         "event" => "new_command_pending",
         "cmd_id" => (int)$cmd_id,
@@ -66,20 +66,32 @@ try {
     // 🌟【修正ポイント】: wildlink_core.php で初期化済みの $core インスタンスを利用し、
     // .env から MQTT_HOST を取得する（未定義時は 127.0.0.1 にフォールバック）
     global $core;
-    $broker_host = $core->getEnv('MQTT_HOST', '127.0.0.1');
+    $env_host = $core->getEnv('MQTT_BROKER');
+    // trimして空なら 127.0.0.1 を使う
+    $broker_host = (!empty(trim($env_host))) ? $env_host : '127.0.0.1';
+    
     $escaped_topic = escapeshellarg($kick_topic);
     $escaped_payload = escapeshellarg($kick_payload);
     
-    $exec_cmd = "mosquitto_pub -h {$broker_host} -t {$escaped_topic} -m {$escaped_payload}";
+    // 🌟【修正】: 末尾に "2>&1" を追加し、エラーメッセージ(stderr)をキャプチャする
+    $exec_cmd = "mosquitto_pub -h {$broker_host} -t {$escaped_topic} -m {$escaped_payload} 2>&1";
     exec($exec_cmd, $output, $return_var);
 
     // 送信失敗時のエラーハンドリング
     if ($return_var !== 0) {
-        $err_stmt = $pdo->prepare("UPDATE node_commands SET val_status = 'error', log_msg = 'Hub kick failed' WHERE id = :id");
+        // 🌟【修正】: OSからのエラー出力結果を文字列にまとめる
+        $error_detail = implode(" | ", $output);
+        if (empty($error_detail)) {
+            $error_detail = "No output. Check if mosquitto_pub is installed or exec() is allowed.";
+        }
+
+        // 🌟【修正】: log_note カラムに実行したコマンドとエラー内容を記録する
+        $err_stmt = $pdo->prepare("UPDATE node_commands SET val_status = 'error', log_msg = 'Hub kick failed', log_note = :detail WHERE id = :id");
+        $err_stmt->bindValue(':detail', "Cmd: {$exec_cmd}  Error: {$error_detail}", PDO::PARAM_STR);
         $err_stmt->bindValue(':id', $cmd_id, PDO::PARAM_INT);
         $err_stmt->execute();
         
-        throw new Exception("MQTT Broker unreachable or Hub kick failed.");
+        throw new Exception("MQTT Broker unreachable or Hub kick failed. Detail: " . $error_detail);
     }
 
     // 🌟【修正ポイント】: 以前あった 'sent' への UPDATE 処理を削除。

@@ -29,7 +29,7 @@ class SwitchUnit {
         fd.append('cmd_json', JSON.stringify(cmd));
 
         try {
-            const res = await fetch('send_cmd.php', { method: 'POST', body: fd });
+            const res = await fetch('api/send_cmd.php', { method: 'POST', body: fd });
             const result = await res.json();
             if (result.success) console.log(`${this.roleName} -> ${action} queued.`);
         } catch (e) { console.error("Switch error:", e); }

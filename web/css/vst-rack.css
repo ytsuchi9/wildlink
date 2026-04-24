@@ -211,3 +211,76 @@ h1 small { color: var(--accent-blue); font-size: 0.8rem; }
     width: 100%;
     border-radius: 2px;
 }
+
+/* 変更状態のハイライト */
+.is-modified {
+    background-color: rgba(255, 193, 7, 0.2) !important; /* 薄い黄色 */
+    border-color: #ffc107 !important;
+    transition: all 0.3s ease;
+}
+
+/* APPLYボタンのアピールアニメーション */
+@keyframes pulse-warning {
+    0% { box-shadow: 0 0 0 0 rgba(255, 193, 7, 0.7); }
+    70% { box-shadow: 0 0 0 6px rgba(255, 193, 7, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 193, 7, 0); }
+}
+.apply-pulse {
+    animation: pulse-warning 2s infinite;
+}
+
+/* プラグインUI用入力フォーム */
+.form-control-vst, .form-select-vst {
+    background-color: var(--bg-dark);
+    color: var(--text-light);
+    border: 1px solid var(--border-color);
+    padding: 0.25rem 0.5rem;
+}
+.form-control-vst:focus, .form-select-vst:focus {
+    background-color: #222;
+    color: #fff;
+    border-color: var(--accent-blue);
+    outline: none;
+    box-shadow: none;
+}
+
+/* ==========================================================================
+   7. 構造強化用 Flexbox レイアウト (競合回避用)
+   ========================================================================== */
+/* Face（ヘッダー）の絶対的な横並びコンテナ */
+.vst-face-container {
+    display: flex !important;
+    flex-direction: row !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    flex-wrap: nowrap !important;
+    width: 100%;
+}
+
+/* Face内の各ブロック */
+.vst-face-block {
+    display: flex !important;
+    align-items: center !important;
+    flex-wrap: nowrap !important;
+}
+
+/* 要素間の隙間（gapの代わり） */
+.vst-gap-sm > * { margin-right: 8px; }
+.vst-gap-sm > *:last-child { margin-right: 0; }
+.vst-gap-md > * { margin-right: 15px; }
+.vst-gap-md > *:last-child { margin-right: 0; }
+
+/* アコーディオン内の横並びコンテナ */
+.vst-accordion-grid {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: stretch !important;
+    width: 100%;
+}
+
+/* 画面幅が狭い時だけアコーディオン内を縦にする */
+@media (max-width: 768px) {
+    .vst-accordion-grid {
+        flex-direction: column !important;
+    }
+}

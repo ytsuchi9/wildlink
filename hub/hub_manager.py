@@ -205,28 +205,53 @@ class WildLinkHubManager:
         self.client.publish(topic, json.dumps(payload, ensure_ascii=False))
 
     def _handle_command_lifecycle(self, cmd_id, status, payload):
-        """コマンドの進行状況(ACK, 完了, エラー)を判定し、DBのステータスを更新します。"""
+        """
+        コマンドの進行状況を判定し、Hub側のDB更新成否も加味して最終決着をつけます。
+        WES 2026 準拠: Nodeが成功してもHubのDB同期に失敗した場合は 'error' と判定する。
+        """
+        # --- 1. 受領確認 (ACK) の処理 ---
         if status == "acknowledged":
             logger.info(f"✅ [ACK] Command {cmd_id} acknowledged by node.")
             self.db.mark_command_acknowledged(cmd_id)
         
+        # --- 2. 完了 (completed) の処理 ---
         elif status == "completed" or status == "success":
-            logger.info(f"🏁 [FIN] Command {cmd_id} completed successfully.")
-            log_ext = payload.get('log_ext') or {}
-            res_val = payload.get('val_res_payload') or log_ext.get('val_res_payload')
+            logger.info(f"🏁 [FIN] Node reported completion for ID {cmd_id}.")
+            
+            sync_success = True  # 同期処理の成否フラグ
+            log_ext = payload.get('log_ext')
+            
+            # 設定同期の実行: Nodeから現在の全パラメータ(log_ext)が届いている場合
+            if log_ext and isinstance(log_ext, dict):
+                res = self.db.fetch_one("SELECT sys_id, vst_role_name FROM node_commands WHERE id = %s", (cmd_id,))
+                if res:
+                    logger.info(f"🔄 [Sync] Syncing latest config for {res['vst_role_name']}...")
+                    # DBの物理カラムおよび JSON(val_params) を最新状態に同期
+                    # 🌟 戻り値(True/False)を確認
+                    sync_success = self.db.update_vst_configs(res['sys_id'], res['vst_role_name'], log_ext)
 
-            if res_val:
-                logger.info(f"💾 Updating node_configs with: {res_val}")
-                self.db.sync_node_config_from_payload(cmd_id, res_val)
+            # 最終ステータスの決定
+            # Nodeが成功していても、Hub側のDB書き込みに失敗していれば整合性が崩れるため 'error' 扱いにする
+            if sync_success:
+                final_status = "completed"
+                final_msg = payload.get('log_msg', 'Completed')
+                final_code = payload.get('log_code', 200)
+            else:
+                final_status = "error"
+                final_msg = f"Node OK, but Hub DB Sync Failed: {payload.get('log_msg')}"
+                final_code = 500  # 内部エラーとして記録
+                logger.error(f"🔥 [Critical] Integrity Error: Command {cmd_id} finalized as error due to DB sync failure.")
 
+            # コマンドの最終結果をDBに書き込み（finalize）
             self.db.finalize_command(
                 cmd_id=cmd_id,
-                status="completed",
-                log_msg=payload.get('log_msg', 'Completed'),
-                log_code=payload.get('log_code', 200),
+                status=final_status,
+                log_msg=final_msg,
+                log_code=final_code,
                 res_payload=payload
             )
         
+        # --- 3. 失敗 (failed/error) の処理 ---
         elif status in ["failed", "error"]:
             logger.error(f"⚠️ [ERR] Command {cmd_id} failed reported by node.")
             self.db.finalize_command(

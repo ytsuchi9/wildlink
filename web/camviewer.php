@@ -30,7 +30,7 @@ $mqttPrefix = $core->getEnv('MQTT_PREFIX', 'wildlink');
         </main>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
-        <script src="js/plugins/vst-unit-base.js"></script>
+        <script src="js/vst-unit-base.js"></script>
         <script src="js/vst-manager.js"></script>
 
         <script>
