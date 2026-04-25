@@ -1,240 +1,220 @@
 /**
- * WES 2026: VstUnitBase (Responsive Rack System)
- * 離散的なアスペクト比(1U/2U/3U)と可変フォントを実装
+ * WES 2026: VstUnitBase (Rack System v17 Core)
+ * V17のCSS構造と通信ロジックを統合した共通基盤クラス
  */
 class VstUnitBase {
     constructor(conf, manager) {
         this.manager = manager;
-        this.conf = conf;
-        this.roleName = conf.vst_role_name;
-        this.val_enabled = (parseInt(conf.val_enabled) === 1);
+        this.conf = Object.assign({
+            vst_description: 'Unit', vst_role_name: 'vst_0', sys_id: 'sys_0', loc_name: 'UNKNOWN',
+            val_enabled: 1, val_status: 'IDLE', log_msg: 'Ready.', log_code: 200
+        }, conf);
+        
+        this.roleName = this.conf.vst_role_name;
+        this.sysId = this.conf.sys_id;
+        this.val_enabled = (parseInt(this.conf.val_enabled) === 1);
+        
         this.originalConfig = {};
-        this.accordionMode = 2;
-        this.autoCloseTimer = null;
+        this.isExpanded = false;
+        this.isKeep = false;
+        this.isDirty = false;
+        this.ui = {};
+
+        this.injectIndicatorStyles();
     }
 
-    /**
-     * [buildBaseWrapper]
-     * 縦横比とフォントサイズを動的に管理するベース構造
-     */
-    buildBaseWrapper(faceCenterHtml, accordionHtml) {
-        const content = document.getElementById(`content-${this.roleName}`);
-        if (!content) return;
+    // 各プラグインから呼ばれる初期化関数
+    initUI() {
+        const container = document.getElementById(`content-${this.roleName}`);
+        if (!container) return;
 
-        // 🌟 1Uの概念をCSS変数で定義。aspect-ratioで高さを自動計算。
-        // min-widthを下回るとスクロールバーが出るよう親で制御することを想定
-        content.innerHTML = `
-            <div class="vst-rack-unit mb-3" id="panel-${this.roleName}" 
-                 style="--u-base-font: clamp(0.7rem, 1.5vw, 1rem); 
-                        min-width: 320px; 
-                        background: #1a1a1a; 
-                        border: 2px solid #333; 
-                        border-radius: 4px; 
-                        overflow: hidden; 
-                        font-size: var(--u-base-font);">
-                
-                <div class="vst-face-1u" 
-                     style="display: flex; align-items: center; justify-content: space-between; 
-                            padding: 0 1rem; height: auto; min-height: 4rem;
-                            background: linear-gradient(180deg, #2a2a2a 0%, #151515 100%);">
-                    
-                    <div style="display: flex; align-items: center; width: 25%; flex-shrink: 0;">
-                        <div id="led-${this.roleName}" class="status-led ${this.val_enabled ? 'led-on' : 'led-off'}" 
-                             style="width: 0.8rem; height: 0.8rem; margin-right: 0.8rem;"></div>
-                        <span style="font-weight: 800; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                            ${this.roleName.replace('vst_', '').toUpperCase()}
-                        </span>
+        // VstManagerが自動生成した余分なヘッダー等を隠し、V17の純粋な外観にする
+        const pluginWrapper = document.getElementById(`plugin-${this.roleName}`);
+        if (pluginWrapper) {
+            pluginWrapper.className = ''; 
+            const header = pluginWrapper.querySelector('.plugin-header');
+            if (header) header.style.display = 'none';
+        }
+
+        // V17の骨格を生成
+        container.innerHTML = `
+            <div class="vst-unit-box" id="vst-box-${this.roleName}">
+                <div class="vst-unit-face">
+                    <div class="face-left">
+                        <label class="power-switch-v">
+                            <input type="checkbox" class="ui-sw vst-input" data-key="val_enabled" ${this.val_enabled ? 'checked' : ''}>
+                            <span class="slider"></span>
+                        </label>
+                        <button class="btn-vst apply-btn-mini ui-apply">APPLY</button>
                     </div>
-                    
-                    <div style="flex-grow: 1; display: flex; justify-content: center; overflow: hidden; padding: 0 0.5rem;">
-                        ${faceCenterHtml}
+                    <div class="face-center" id="face-center-${this.roleName}">
+                        ${this.renderFaceCenter()}
                     </div>
-                    
-                    <div style="display: flex; align-items: center; justify-content: flex-end; width: 35%; flex-shrink: 0; gap: 1rem;">
-                        <button class="btn btn-warning btn-sm fw-bold d-none apply-pulse" id="btn-apply-${this.roleName}" 
-                                style="font-size: 0.7rem; padding: 0.2rem 0.5rem;">APPLY</button>
-                        
-                        <div class="form-check form-switch m-0">
-                            <input class="form-check-input vst-input" type="checkbox" id="en-sw-${this.roleName}" data-key="val_enabled" 
-                                   ${this.val_enabled ? 'checked' : ''} style="cursor: pointer;">
-                        </div>
-                        
-                        <div style="display: flex; gap: 0.5rem; border-left: 1px solid #444; padding-left: 0.8rem;">
-                            <button class="btn-vst-icon text-warning" id="btn-ping-${this.roleName}"><i class="fas fa-satellite-dish"></i></button>
-                            <button class="btn-vst-icon text-info" id="btn-toggle-${this.roleName}"><i class="fas fa-chevron-down" id="icon-toggle-${this.roleName}"></i></button>
-                        </div>
+                    <div class="face-right">
+                        <button class="icon-btn ui-exp" style="font-size:2.5cqi;">⛶</button>
+                        <button class="icon-btn ui-keep" style="font-size:1.6cqi;">固定</button>
                     </div>
                 </div>
-
-                <div id="accordion-${this.roleName}" style="display: none; background: #000; border-top: 2px solid #333;">
-                    <div class="container-fluid p-0">
-                        <div class="row g-0">
-                            <div class="col-12 col-lg-8 border-end border-dark">
-                                <div id="lcd-frame-${this.roleName}" 
-                                     style="min-height: 12rem; display: flex; flex-direction: column; padding: 0.5rem;">
-                                    <div class="d-flex justify-content-between" style="font-size: 0.6rem; color: #555; margin-bottom: 0.3rem;">
-                                        <span>SIGNAL_PROCESSOR</span>
-                                        <span id="lcd-time-${this.roleName}">--:--:--</span>
-                                    </div>
-                                    <div class="lcd-body" style="flex-grow: 1; background: #050505; border: 1px solid #222; padding: 0.5rem; border-radius: 2px;">
-                                        <div id="lcd-msg-${this.roleName}" style="color: #0f0; font-family: monospace; font-size: 1.1rem;">IDLE</div>
-                                        <div id="lcd-ext-${this.roleName}" class="mt-2 text-info" style="font-size: 0.8rem; font-family: monospace;"></div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-12 col-lg-4 bg-dark p-3">
-                                <div style="font-size: 0.65rem; color: #888; text-transform: uppercase; margin-bottom: 1rem;">Parameters</div>
-                                ${accordionHtml}
-                                <div class="mt-4 pt-2 border-top border-secondary">
-                                    <button class="btn btn-outline-secondary btn-sm w-100" id="btn-reset-${this.roleName}" style="font-size: 0.7rem;">REVERT</button>
-                                </div>
-                            </div>
+                <div class="unit-body">
+                    <div class="test-lcd ui-lcd" id="lcd-${this.roleName}">
+                        <span style="color:#555;">[${new Date().toLocaleTimeString('ja-JP')}]</span> SYSTEM READY.
+                    </div>
+                    <div class="settings-area" id="settings-${this.roleName}">
+                        ${this.renderSettings()}
+                        <div style="display:flex;gap:0.5cqi;margin-top:auto;">
+                            <button class="btn-vst action-btn ui-reset">RESET</button>
+                            <button class="btn-vst action-btn ui-apply">APPLY</button>
                         </div>
                     </div>
                 </div>
             </div>
         `;
 
-        this.bindCommonEvents();
-        this.bindDirtyCheck();
-        
-        // 🌟 APPLY点滅対策：HTMLが落ち着くのをしっかり待ってから「正本」を取得
+        this.ui = {
+            box: document.getElementById(`vst-box-${this.roleName}`),
+            sw: container.querySelector('.ui-sw'),
+            applies: container.querySelectorAll('.ui-apply'),
+            reset: container.querySelector('.ui-reset'),
+            exp: container.querySelector('.ui-exp'),
+            keep: container.querySelector('.ui-keep'),
+            lcd: document.getElementById(`lcd-${this.roleName}`)
+        };
+
+        this.bindEvents();
         setTimeout(() => this.syncOriginalConfigFromDOM(), 300);
     }
 
-    /**
-     * [syncOriginalConfigFromDOM]
-     * 点滅防止：すべての値を文字列かつ空白削除で厳密に管理
-     */
-    syncOriginalConfigFromDOM() {
-        this.originalConfig = {};
-        const inputs = document.querySelectorAll(`#content-${this.roleName} .vst-input`);
-        inputs.forEach(input => {
-            const key = input.getAttribute('data-key');
-            if (key) this.originalConfig[key] = this.getVal(input);
-        });
-        this.checkDirtyState();
-    }
+    // 子クラスでオーバーライドする描画関数
+    renderFaceCenter() { return ``; }
+    renderSettings() { return ``; }
 
-    getVal(input) {
-        if (input.type === 'checkbox') return input.checked ? "1" : "0";
-        return String(input.value).trim();
-    }
+    // --- ロジック・イベント基盤 ---
+    bindEvents() {
+        this.ui.exp.onclick = () => this.toggleAccordion();
+        this.ui.keep.onclick = () => this.toggleKeep();
+        this.ui.reset.onclick = () => this.resetSettings();
+        this.ui.applies.forEach(btn => btn.onclick = () => this.applySettings());
 
-    /**
-     * [checkDirtyState]
-     * 変更された項目のみ背景を変える（全体が変わらないように制御）
-     */
-    checkDirtyState() {
-        let isDirty = false;
-        const inputs = document.querySelectorAll(`#content-${this.roleName} .vst-input`);
-        
-        inputs.forEach(input => {
-            const key = input.getAttribute('data-key');
-            if (!key) return;
-
-            const current = this.getVal(input);
-            const original = this.originalConfig[key];
-
-            if (current !== original) {
-                isDirty = true;
-                // 🌟 個別の項目だけ背景を変える
-                input.style.backgroundColor = "rgba(255, 193, 7, 0.2)";
-                if (input.type !== 'checkbox') input.style.color = "#ffc107";
-            } else {
-                input.style.backgroundColor = "";
-                input.style.color = "";
-            }
-        });
-
-        const btn = document.getElementById(`btn-apply-${this.roleName}`);
-        if (btn) {
-            if (isDirty) btn.classList.remove('d-none');
-            else btn.classList.add('d-none');
-        }
-    }
-
-    /**
-     * [updateLCD]
-     * 検知時の派手な演出
-     */
-    updateLCD(log_msg, log_code, log_ext, updated_at) {
-        const msgEl = document.getElementById(`lcd-msg-${this.roleName}`);
-        const frame = document.getElementById(`lcd-frame-${this.roleName}`);
-        
-        if (msgEl) {
-            msgEl.innerHTML = log_msg || "OK";
-            // 🌟 検知時は背景を一瞬赤くフラッシュさせる（派手な通知）
-            if (log_msg && (log_msg.includes('DETECTION') || log_msg.includes('ON'))) {
-                if (frame) {
-                    frame.style.backgroundColor = "rgba(255, 0, 0, 0.3)";
-                    setTimeout(() => { frame.style.backgroundColor = ""; }, 500);
-                }
-            }
-        }
-        
-        const timeEl = document.getElementById(`lcd-time-${this.roleName}`);
-        if (timeEl && updated_at) {
-            timeEl.innerText = new Date(updated_at).toLocaleTimeString('ja-JP');
-        }
-        const extEl = document.getElementById(`lcd-ext-${this.roleName}`);
-        if (extEl && log_ext) {
-            const extStr = typeof log_ext === 'object' ? JSON.stringify(log_ext) : log_ext;
-            extEl.innerText = String(extStr).replace(/[\{\}\"]/g, '');
-        }
-    }
-
-    // --- 以降、基本メソッド ---
-    bindCommonEvents() {
-        document.getElementById(`btn-toggle-${this.roleName}`).onclick = () => this.toggleAccordion();
-        document.getElementById(`btn-ping-${this.roleName}`).onclick = () => this.pingNode();
-        document.getElementById(`btn-apply-${this.roleName}`).onclick = () => this.applySettings();
-        document.getElementById(`btn-reset-${this.roleName}`).onclick = () => this.resetSettings();
-    }
-
-    bindDirtyCheck() {
-        const inputs = document.querySelectorAll(`#content-${this.roleName} .vst-input`);
+        const inputs = document.querySelectorAll(`#vst-box-${this.roleName} .vst-input`);
         inputs.forEach(input => {
             input.addEventListener('change', () => this.checkDirtyState());
             input.addEventListener('input', () => this.checkDirtyState());
         });
     }
 
-    toggleAccordion(forceState = null) {
-        const content = document.getElementById(`accordion-${this.roleName}`);
-        const icon = document.getElementById(`icon-toggle-${this.roleName}`);
-        if (!content || !icon) return;
-        const isHidden = (content.style.display === "none");
-        const willOpen = forceState !== null ? forceState : isHidden;
-        content.style.display = willOpen ? "block" : "none";
-        icon.className = willOpen ? "fas fa-chevron-up text-primary" : "fas fa-chevron-down text-info";
-    }
-
-    resetSettings() {
-        const inputs = document.querySelectorAll(`#content-${this.roleName} .vst-input`);
+    syncOriginalConfigFromDOM() {
+        this.originalConfig = {};
+        const inputs = document.querySelectorAll(`#vst-box-${this.roleName} .vst-input`);
         inputs.forEach(input => {
             const key = input.getAttribute('data-key');
-            if (!key || this.originalConfig[key] === undefined) return;
-            if (input.type === 'checkbox') {
-                input.checked = (String(this.originalConfig[key]) === "1");
-            } else {
-                input.value = this.originalConfig[key];
-            }
+            if (key) this.originalConfig[key] = input.type === 'checkbox' ? (input.checked ? "1" : "0") : String(input.value).trim();
         });
         this.checkDirtyState();
     }
 
-    async pingNode() {
-        const btn = document.getElementById(`btn-ping-${this.roleName}`);
-        if (btn) btn.classList.add('vst-blink');
+    checkDirtyState() {
+        this.isDirty = false;
+        const inputs = document.querySelectorAll(`#vst-box-${this.roleName} .vst-input`);
+        
+        inputs.forEach(input => {
+            const key = input.getAttribute('data-key');
+            if (!key) return;
+            const current = input.type === 'checkbox' ? (input.checked ? "1" : "0") : String(input.value).trim();
+            if (current !== this.originalConfig[key]) this.isDirty = true;
+        });
+
+        if (this.isDirty) {
+            this.ui.applies.forEach(btn => btn.classList.add('dirty'));
+            this.ui.reset.classList.add('active');
+        } else {
+            this.ui.applies.forEach(btn => btn.classList.remove('dirty'));
+            this.ui.reset.classList.remove('active');
+        }
+    }
+
+    resetSettings() {
+        if (!this.isDirty || !confirm("変更を破棄しますか？")) return;
+        const inputs = document.querySelectorAll(`#vst-box-${this.roleName} .vst-input`);
+        inputs.forEach(input => {
+            const key = input.getAttribute('data-key');
+            if (!key || this.originalConfig[key] === undefined) return;
+            if (input.type === 'checkbox') input.checked = (this.originalConfig[key] === "1");
+            else input.value = this.originalConfig[key];
+        });
+        this.checkDirtyState();
+    }
+
+    async applySettings() {
+        if (!this.isDirty) return;
+        this.triggerAlert('YELLOW', 'SYNCING...');
+        this.ui.applies.forEach(btn => { btn.classList.remove('dirty'); btn.classList.add('success'); btn.disabled = true; });
+
         try {
             const formData = new URLSearchParams();
             formData.append('sys_id', this.manager.nodeId);
-            formData.append('cmd_type', 'ping');
-            formData.append('cmd_json', JSON.stringify({ role: this.roleName }));
+            formData.append('cmd_type', 'update_config');
+
+            const payload = { role: this.roleName };
+            document.querySelectorAll(`#vst-box-${this.roleName} .vst-input`).forEach(input => {
+                const key = input.getAttribute('data-key');
+                if (key) payload[key] = input.type === 'checkbox' ? (input.checked ? 1 : 0) : parseFloat(input.value);
+            });
+            formData.append('cmd_json', JSON.stringify(payload));
             await fetch('api/send_cmd.php', { method: 'POST', body: formData });
-        } catch (e) { console.error(e); } finally {
-            setTimeout(() => { if (btn) btn.classList.remove('vst-blink'); }, 1000);
+        } catch (e) {
+            console.error("Apply Error:", e);
+        } finally {
+            this.ui.applies.forEach(btn => { btn.classList.remove('success'); btn.disabled = false; });
         }
+    }
+
+    toggleAccordion() {
+        if (this.isKeep && this.isExpanded) return;
+        this.isExpanded = !this.isExpanded;
+        this.ui.box.classList.toggle('expanded', this.isExpanded);
+        this.ui.exp.innerText = this.isExpanded ? '▲' : '⛶';
+        this.ui.exp.classList.toggle('active', this.isExpanded);
+    }
+
+    toggleKeep() {
+        this.isKeep = !this.isKeep;
+        this.ui.keep.classList.toggle('active', this.isKeep);
+        if (this.isKeep && !this.isExpanded) this.toggleAccordion();
+    }
+
+    // --- ユーティリティ系 ---
+    updateLCD(msg, isRed = false) {
+        if (!this.ui.lcd) return;
+        const t = new Date().toLocaleTimeString('ja-JP', { hour12: false });
+        const color = isRed ? 'var(--accent-red)' : 'var(--accent-green)';
+        this.ui.lcd.innerHTML += `<br><span style="color:#555;">[${t}]</span> <span style="color:${color};">${msg}</span>`;
+        this.ui.lcd.scrollTop = this.ui.lcd.scrollHeight;
+    }
+
+    updateDOMText(id, text) { const el = document.getElementById(id); if (el) el.innerText = text; }
+    
+    triggerAlert(level, msg) {
+        const lvl = level.toUpperCase();
+        this.ui.box.classList.remove('alert-header-red', 'alert-header-yellow');
+        if (lvl === 'RED') {
+            this.ui.box.classList.add('alert-header-red');
+            if (!this.isExpanded) this.toggleAccordion();
+        } else if (lvl === 'YELLOW') {
+            this.ui.box.classList.add('alert-header-yellow');
+        }
+    }
+
+    // インジケーター用の極小CSSを動的に注入（CSSファイルを汚さないため）
+    injectIndicatorStyles() {
+        if (document.getElementById('vst-ind-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'vst-ind-styles';
+        style.innerHTML = `
+            .ind-led { display:inline-block; padding:0 0.4cqi; margin-right:0.3cqi; border:1px solid #444; border-radius:2px; font-size:1.4cqi; background:#222; color:#555; transition:0.2s; }
+            .ind-led.on { border-color:var(--accent-green); color:var(--accent-green); background:rgba(0,255,65,0.1); box-shadow:0 0 3px rgba(0,255,65,0.4); }
+            .ind-led.red { border-color:var(--accent-red); color:var(--accent-red); background:rgba(255,0,0,0.1); box-shadow:0 0 3px rgba(255,0,0,0.4); }
+            .ind-val { display:inline-block; padding:0 0.4cqi; margin-right:0.3cqi; font-size:1.4cqi; color:#aaa; background:#111; border-bottom:1px solid #444; }
+        `;
+        document.head.appendChild(style);
     }
 }

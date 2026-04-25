@@ -1,14 +1,14 @@
 {
-  "timestamp": 1777047171.1739907,
+  "timestamp": 1777131228.889562,
   "configs": [
     {
       "vst_type": "sns_motion",
       "val_params": {
-        "val_interval": 10,
+        "val_interval": 14,
         "act_db": 1,
         "act_line": 0,
-        "act_rec": 1,
-        "act_rec_mode": 0
+        "act_rec": 0,
+        "act_rec_mode": 1
       },
       "is_active": 1,
       "vst_role_name": "sns_move",
