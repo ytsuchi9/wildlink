@@ -82,6 +82,7 @@ class VstUnitBase {
 
         this.bindEvents();
         setTimeout(() => this.syncOriginalConfigFromDOM(), 300);
+        this.updateFaceVisual({}); // 空のデータで初期描画（this.confが参照される）
     }
 
     // 子クラスでオーバーライドする描画関数

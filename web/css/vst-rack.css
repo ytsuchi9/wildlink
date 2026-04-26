@@ -1,6 +1,11 @@
 /**
  * VST Rack System: Master Styling (v17 - Mobile Fit & High Visibility)
+ * 4/26 修正
  */
+
+*, *::before, *::after {
+    box-sizing: border-box;
+}
 
 :root {
     --rack-bg: #121212;
@@ -27,12 +32,14 @@
 .vst-unit-box.expanded { aspect-ratio: 9.5 / 5.5; }
 
 /* --- 1U Face --- */
-.vst-unit-face { display: flex; align-items: center; height: 100%; background: linear-gradient(180deg, #2a2a2a, #151515); }
+/* 🌟 width: 100%; と box-sizing: border-box; を追加して親枠をカッチリ固定 (4/26 修正)*/
+.vst-unit-face { display: flex; align-items: center; height: 100%; width: 100%; background: linear-gradient(180deg, #2a2a2a, #151515); box-sizing: border-box; }
 .vst-unit-box.expanded .vst-unit-face { height: 31.8%; border-bottom: 1px solid #000; }
 
 /* 左右スリムブロック */
 .face-left { display: flex; flex-direction: column; justify-content: center; align-items: center; width: 7cqi; height: 100%; gap: 0.4cqi; flex-shrink: 0; }
-.face-center { flex: 1; display: flex; flex-direction: column; justify-content: space-evenly; height: 100%; padding: 0 1.5cqi; border-left: 1px solid #333; min-width: 0; }
+/* 🌟 overflow: hidden; と box-sizing: border-box; を追加 (4/26 修正)*/
+.face-center { flex: 1; display: flex; flex-direction: column; justify-content: space-evenly; height: 100%; padding: 0 1.5cqi; border-left: 1px solid #333; min-width: 0; overflow: hidden; box-sizing: border-box; }
 .face-right { width: 5.5cqi; height: 100%; display: flex; flex-direction: column; border-left: 1px solid #333; flex-shrink: 0; }
 
 /* 🌟 APPLYボタン（ミニ）のスマホ対応修正 */
