@@ -1,0 +1,154 @@
+@charset "UTF-8";
+/* web/css/vst-rack-test2.css (WES 2026 V17.5) */
+
+:root {
+    --bg-base: #0a0a0c;
+    --rack-bg: #141517;
+    --panel-bg: #1c1d20;
+    --text-main: #e0e0e0;
+    --text-dim: #777;
+    --accent-green: #00ff41;
+    --accent-red: #ff3333;
+    --accent-yellow: #ffaa00;
+    --border-color: #333;
+}
+
+/* 全要素のボックス計算を直感的にし、はみ出しを防ぐ */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+    background-color: var(--bg-base);
+    color: var(--text-main);
+    font-family: 'Consolas', 'Courier New', 'Hiragino Kaku Gothic ProN', monospace;
+    margin: 0; padding: 0;
+}
+
+.rack-header {
+    background: #111;
+    border-bottom: 1px solid var(--border-color);
+    padding: 10px 15px; margin-bottom: 20px;
+}
+.rack-header .rack-title { font-size: 1.2rem; font-weight: bold; letter-spacing: 2px; }
+.rack-header .version { color: var(--accent-green); font-size: 0.8rem; }
+.rack-header .rack-stats { font-size: 0.8rem; color: var(--text-dim); margin-top: 5px; }
+
+/* === コンテナクエリの基準枠 === */
+.rack-container {
+    container-type: inline-size;
+    container-name: rack;
+    width: 100%; max-width: 800px;
+    margin: 0 auto; padding: 0 10px;
+}
+
+.vst-unit-box {
+    background: var(--rack-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    margin-bottom: 15px;
+    overflow: hidden;
+    transition: 0.3s;
+}
+
+/* --- 1U Face (常に表示) ---
+   🌟 要求仕様: 9.5 : 1.75 の比率で固定 */
+.vst-unit-face {
+    display: flex;
+    width: 100%;
+    aspect-ratio: 9.5 / 1.75; /* 比率固定 */
+    min-height: 55px; /* スマホ時の限界担保 */
+    background: linear-gradient(180deg, #1e2022 0%, #111 100%);
+    border-bottom: 1px solid transparent;
+    transition: background 0.3s, color 0.3s;
+}
+.vst-unit-box.expanded .vst-unit-face { border-bottom-color: var(--border-color); }
+
+/* --- アラート発動時の色反転 (黄色は文字黒) --- */
+.vst-unit-box.alert-header-yellow .vst-unit-face {
+    background: var(--accent-yellow) !important;
+    color: #000 !important;
+}
+.vst-unit-box.alert-header-yellow .vst-unit-face * { color: #000 !important; border-color: #555 !important; }
+.vst-unit-box.alert-header-red .vst-unit-face {
+    border: 2px solid var(--accent-red);
+    box-shadow: inset 0 0 10px rgba(255,0,0,0.5);
+}
+
+/* --- 左・中・右 パネル分割 --- */
+.face-left {
+    width: 45px; /* 極力狭く */
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    border-right: 1px solid var(--border-color); gap: 4px;
+}
+.face-center {
+    flex: 1; padding: 2px 8px;
+    display: flex; flex-direction: column; justify-content: space-between;
+    min-width: 0; /* フレックスはみ出し防止 */
+}
+.face-right {
+    width: 40px;
+    display: flex; flex-direction: column; align-items: center; justify-content: space-evenly;
+    border-left: 1px solid var(--border-color);
+}
+
+/* --- 1U 中央部の3行レイアウト --- */
+/* 上側の隙間を削る */
+.r1-container { display: flex; justify-content: space-between; align-items: flex-start; line-height: 1.1; margin-top: -2px; }
+.r1-left { display: flex; flex-direction: column; min-width: 0; }
+.r1-id { font-size: clamp(10px, 3.5cqi, 16px); font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r1-loc { font-size: clamp(8px, 2.5cqi, 12px); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r1-desc { font-size: clamp(11px, 4cqi, 18px); color: var(--accent-green); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+
+.r2-container { display: flex; align-items: center; gap: 5px; }
+
+.r3-container { font-size: clamp(8px, 2.5cqi, 12px); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* --- 電源スイッチ (縦型・スリム化) --- */
+.power-switch-v { position: relative; width: 14px; height: 28px; }
+.power-switch-v input { opacity: 0; width: 0; height: 0; }
+.power-switch-v .slider {
+    position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+    background-color: #222; border: 1px solid #555; border-radius: 4px; transition: .3s;
+}
+.power-switch-v .slider:before {
+    position: absolute; content: ""; width: 10px; height: 10px; left: 1px; bottom: 1px;
+    background-color: #666; border-radius: 2px; transition: .3s;
+}
+.power-switch-v input:checked + .slider { border-color: var(--accent-green); box-shadow: 0 0 5px rgba(0,255,65,0.4); }
+.power-switch-v input:checked + .slider:before { background-color: var(--accent-green); transform: translateY(-14px); }
+
+.apply-btn-mini { font-size: 9px; padding: 2px; width: 34px; text-align: center; }
+
+/* アイコンボタン群 */
+.icon-btn { background: none; border: 1px solid transparent; color: var(--text-dim); font-size: 14px; cursor: pointer; padding: 2px; line-height: 1; border-radius:2px;}
+.icon-btn:hover { border-color: #555; color: #fff; }
+.icon-btn.active { color: var(--accent-yellow); }
+
+/* --- 展開部 (4U化・右側見切れ防止) --- */
+.unit-body { display: none; width: 100%; flex-wrap: wrap; /* 🌟ここが画面幅に応じて段落ちさせる魔法 */ }
+.expanded .unit-body { display: flex; }
+
+.ui-lcd {
+    flex: 1.5 1 250px; /* 最小幅250pxを下回ると下に落ちる */
+    background: #000; color: var(--accent-green); font-size: 12px; padding: 10px;
+    height: 160px; overflow-y: auto; border-right: 1px solid var(--border-color);
+}
+.settings-area {
+    flex: 1 1 250px;
+    padding: 10px; display: flex; flex-direction: column; justify-content: space-between;
+}
+
+/* --- コンパクト設定パネル (数値入力＋グリッド) --- */
+.setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 12px; }
+.num-input {
+    background: #111; color: var(--accent-orange); border: 1px solid #444; border-radius: 3px;
+    padding: 3px 5px; width: 50px; text-align: right; font-family: monospace;
+}
+.checkbox-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px;
+    background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; border: 1px solid #333; margin: 10px 0;
+}
+.chk-label { display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.select-dark { background: #111; color: var(--accent-orange); border: 1px solid #444; padding: 3px; font-size: 11px; }
+
+.btn-vst { background: transparent; border: 1px solid #555; color: #888; cursor: pointer; border-radius: 3px; transition: 0.2s; }
+.btn-vst.dirty { color: var(--accent-yellow); border-color: var(--accent-yellow); font-weight: bold; background: rgba(255, 170, 0, 0.1); }
