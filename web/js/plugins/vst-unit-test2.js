@@ -1,34 +1,50 @@
 /**
- * WES 2026: VstUnitTest2 (人感センサー 1U 3行レイアウト版)
- * Baseクラスを継承し、要件に合わせた完全なUIを提供します。
+ * web/js/plugins/vst-unit-test2.js
+ * WES 2026: VstUnitTest2 (4K & Zoom Ready, Auto-height Feature)
+ * 
+ * 今後のデバイス開発の「モデル（お手本）」となるクラス。
+ * 履歴重視のハイブリッドエラーコード設計、差分JSONアップデート、
+ * および動的なレイアウト制御（高さ自動拡張）の実装例を提供します。
  */
 class VstUnitTest2 extends VstUnitBase {
     constructor(conf, manager) {
         super(conf, manager);
+        this.initUI(); 
     }
 
     /**
      * @override initUI()
-     * Baseの骨格生成後に、右端へ死活チェックボタンを追加します。
+     * 右端のパネルに「死活チェック」と「高さモード切替」の2つのボタンをマウントします。
      */
     initUI() {
-        super.initUI(); // BaseによるDOMの生成
+        super.initUI();
 
         const faceRight = this.ui.box.querySelector('.face-right');
         if (faceRight) {
-            // 死活チェック（リロード）ボタンを生成
+            // ① 死活チェック（ping）ボタン
             const reloadBtn = document.createElement('button');
             reloadBtn.className = 'icon-btn ui-reload';
             reloadBtn.innerHTML = '↻';
             reloadBtn.title = '死活確認 (Status Request)';
             reloadBtn.onclick = () => this.pingNode();
             faceRight.appendChild(reloadBtn);
+
+            // ② パネル高さ拡張/固定 切替ボタン (画像/グラフ表示用)
+            // このボタンで CSS の .auto-height クラスをトグルし、スクロール制限を解除します
+            const resizeBtn = document.createElement('button');
+            resizeBtn.className = 'icon-btn ui-resize';
+            resizeBtn.innerHTML = '⇕';
+            resizeBtn.title = 'パネル高さ拡張/固定 切替';
+            resizeBtn.onclick = () => {
+                this.ui.box.classList.toggle('auto-height');
+                resizeBtn.classList.toggle('active');
+            };
+            faceRight.appendChild(resizeBtn);
         }
     }
 
     /**
      * @override renderFaceCenter()
-     * 1U部分の中央。要求通りの3行（ID/Name/Loc、LED、Status）を隙間なく配置します。
      */
     renderFaceCenter() {
         const valName = this.conf.val_name || 'NO_NAME';
@@ -59,7 +75,6 @@ class VstUnitTest2 extends VstUnitBase {
 
     /**
      * @override renderSettings()
-     * スライダーを廃止し、数値入力＋増減矢印(type=number標準)のレイアウト。
      */
     renderSettings() {
         const p = this.conf.val_params || {};
@@ -107,9 +122,6 @@ class VstUnitTest2 extends VstUnitBase {
         `;
     }
 
-    /**
-     * UI固有の連動メソッド：SYNCチェック時の数値入力制御
-     */
     syncAlertInputs() {
         const box = this.ui.box;
         const syncChk = document.getElementById(`sync-chk-${this.roleName}`);
@@ -124,19 +136,13 @@ class VstUnitTest2 extends VstUnitBase {
         }
     }
 
-    /**
-     * 死活確認（リロード）ボタン押下時の処理
-     */
     async pingNode() {
         this.updateLCD("Pinging node for latest status...");
         const btn = this.ui.box.querySelector('.ui-reload');
-        if (btn) btn.style.transform = "rotate(360deg)"; // くるっと回す演出
+        if (btn) btn.style.transform = "rotate(360deg)"; 
         
         try {
-            // 本来は api/send_cmd.php へ status_request をPOSTする
             console.log(`[API] Send ping to ${this.sysId}`);
-            
-            // デモ用の演出
             setTimeout(() => {
                 this.updateLCD("Status Received. All systems nominal.");
                 if (btn) btn.style.transform = "none";
@@ -147,16 +153,10 @@ class VstUnitTest2 extends VstUnitBase {
         }
     }
 
-    /**
-     * @override
-     * Hubから新しいデータを受信した際にFaceを更新する
-     */
     updateFaceVisual(data) {
-        // 設定値のベース
         const params = data.val_params || this.conf.val_params || {};
         const checkTrue = (val) => val === 1 || val === true || val === '1';
 
-        // LEDの点灯反映
         const setLed = (idSuffix, condition) => {
             const el = document.getElementById(`led-${idSuffix}-${this.roleName}`);
             if (el) el.classList.toggle('on', condition);
@@ -165,23 +165,20 @@ class VstUnitTest2 extends VstUnitBase {
         setLed('db', checkTrue(params.act_db));
         setLed('line', checkTrue(params.act_line));
 
-        // 3行目のステータス文字列更新
         const timeStr = data.updated_at || new Date().toLocaleTimeString('ja-JP', { hour12: false });
         const status = (data.val_status || 'IDLE').toUpperCase();
         const msg = data.log_msg || 'Ready';
-        const code = data.log_code || 200;
+        const code = data.log_code || 200; 
         
         const r3 = document.getElementById(`r3-${this.roleName}`);
         if (r3) {
             r3.innerText = `[${timeStr}] ST:${status} | [${code}] ${msg}`;
         }
         
-        // ログエリア(LCD)の更新
         if (msg) {
             const isError = code >= 400 || msg.includes('DETECTED');
             this.updateLCD(`[${code}] ${msg}`, isError);
             
-            // 検知時は赤く点滅させる
             if (msg.includes('DETECTED')) {
                 const idleLed = document.getElementById(`led-idle-${this.roleName}`);
                 const recLed = document.getElementById(`led-rec-${this.roleName}`);

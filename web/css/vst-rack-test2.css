@@ -1,8 +1,8 @@
 @charset "UTF-8";
-/* web/css/vst-rack-test2.css (WES 2026 V17.5) */
+/* web/css/vst-rack-test2.css (WES 2026 Layout Foundation - 最終確定版) */
 
 :root {
-    --bg-base: #0a0a0c;
+    --bg-base: #050505;
     --rack-bg: #141517;
     --panel-bg: #1c1d20;
     --text-main: #e0e0e0;
@@ -10,10 +10,10 @@
     --accent-green: #00ff41;
     --accent-red: #ff3333;
     --accent-yellow: #ffaa00;
+    --accent-orange: #ff8800; /* 未保存(APPLY)などの強調色 */
     --border-color: #333;
 }
 
-/* 全要素のボックス計算を直感的にし、はみ出しを防ぐ */
 *, *::before, *::after { box-sizing: border-box; }
 
 body {
@@ -23,132 +23,214 @@ body {
     margin: 0; padding: 0;
 }
 
-.rack-header {
-    background: #111;
-    border-bottom: 1px solid var(--border-color);
-    padding: 10px 15px; margin-bottom: 20px;
-}
-.rack-header .rack-title { font-size: 1.2rem; font-weight: bold; letter-spacing: 2px; }
-.rack-header .version { color: var(--accent-green); font-size: 0.8rem; }
-.rack-header .rack-stats { font-size: 0.8rem; color: var(--text-dim); margin-top: 5px; }
-
-/* === コンテナクエリの基準枠 === */
+/* =========================================================
+   【1. 全体レイアウト：Flexboxによる堅牢な基盤】
+   今後デバイスを追加する際、外側の配置はすべてこのルールに従います。
+========================================================= */
 .rack-container {
-    container-type: inline-size;
-    container-name: rack;
-    width: 100%; max-width: 800px;
-    margin: 0 auto; padding: 0 10px;
+    display: flex;
+    flex-wrap: wrap;             /* 画面幅に収まらない場合は自動で下の行へ折り返す */
+    justify-content: flex-start; /* パネルが最大幅に達した際、左詰めにし右側に空白を残す */
+    align-items: flex-start;     /* 上部を揃える */
+    gap: 15px;                   /* パネル同士の隙間（縦・横） */
+    
+    width: 100%;
+    margin: 0;
+    padding: 0 20px 20px 20px;
 }
 
+/* スマホ表示時の画面端の無駄な余白を削り、パネル領域を確保する */
+@media (max-width: 500px) {
+    .rack-container { padding: 0 8px 15px 8px; }
+}
+
+.vst-plugin-container {
+    /* 内部のフォントサイズ自動計算(cqi)の基準となるコンテナ指定 */
+    container-type: inline-size;
+    container-name: panel;
+
+    /* 
+      【レスポンシブの心臓部】
+      flex: [伸びる比率] [縮む比率] [基準となる幅(flex-basis)];
+      
+      - 基準幅 460px: 1024pxモニタ(有効描画領域 約950px)で、2枚(460×2=920px)を並べるための最適値。
+      - 伸びる(1): 画面が広い場合、max-widthに達するまで隙間を埋めるように広がる。
+      - 縮む(1): スマホなど画面が460px未満の場合、画面幅に合わせて100%に縮小する（はみ出し防止）。
+    */
+    flex: 1 1 460px; 
+    
+    /* 
+      【最大幅の制限】
+      ウインドウがどれだけ広くても、1枚のパネルはこのサイズ以上には広がらない。
+      これに達したパネルから順に左寄せになる。
+    */
+    max-width: 912px;
+
+    /* flexアイテムが縮む際に中身の文字等に押し出されてはみ出すのを防ぐおまじない */
+    min-width: 0; 
+}
+
+/* =========================================================
+   【2. ハードウェア筐体のデザイン】
+========================================================= */
 .vst-unit-box {
     background: var(--rack-bg);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    margin-bottom: 15px;
+    border: 1px solid #111;
+    border-top: 1px solid #4a4a4a;
+    border-bottom: 2px solid #000;
+    box-shadow: 0 6px 12px rgba(0,0,0,0.6);
+    border-radius: 2px;
     overflow: hidden;
     transition: 0.3s;
 }
 
-/* --- 1U Face (常に表示) ---
-   🌟 要求仕様: 9.5 : 1.75 の比率で固定 */
 .vst-unit-face {
     display: flex;
     width: 100%;
-    aspect-ratio: 9.5 / 1.75; /* 比率固定 */
-    min-height: 55px; /* スマホ時の限界担保 */
-    background: linear-gradient(180deg, #1e2022 0%, #111 100%);
+    aspect-ratio: 9.5 / 1.75; /* モニターやスマホでの黄金比を維持 */
+    min-height: 55px;
+    background: linear-gradient(180deg, #222428 0%, #111 100%);
     border-bottom: 1px solid transparent;
     transition: background 0.3s, color 0.3s;
+    position: relative;
 }
 .vst-unit-box.expanded .vst-unit-face { border-bottom-color: var(--border-color); }
 
-/* --- アラート発動時の色反転 (黄色は文字黒) --- */
-.vst-unit-box.alert-header-yellow .vst-unit-face {
-    background: var(--accent-yellow) !important;
-    color: #000 !important;
-}
+/* アラート発生時の状態変化（サバイバルモード等の発動を想定） */
+.vst-unit-box.alert-header-yellow .vst-unit-face { background: var(--accent-yellow) !important; color: #000 !important; }
 .vst-unit-box.alert-header-yellow .vst-unit-face * { color: #000 !important; border-color: #555 !important; }
-.vst-unit-box.alert-header-red .vst-unit-face {
-    border: 2px solid var(--accent-red);
-    box-shadow: inset 0 0 10px rgba(255,0,0,0.5);
-}
+.vst-unit-box.alert-header-red .vst-unit-face { border: 2px solid var(--accent-red); box-shadow: inset 0 0 20px rgba(255,0,0,0.5); }
 
-/* --- 左・中・右 パネル分割 --- */
+/* =========================================================
+   【3. 左右のラックマウント耳とスイッチ類】
+========================================================= */
 .face-left {
-    width: 45px; /* 極力狭く */
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    border-right: 1px solid var(--border-color); gap: 4px;
-}
-.face-center {
-    flex: 1; padding: 2px 8px;
-    display: flex; flex-direction: column; justify-content: space-between;
-    min-width: 0; /* フレックスはみ出し防止 */
+    position: relative;
+    width: 50px; /* 耳の幅 */
+    display: flex; 
+    flex-direction: column; 
+    
+    /* 内部のスイッチ類を数学的に完全な中央へ配置する設定 */
+    align-items: center;     /* 左右の中央揃え */
+    justify-content: center; /* 上下の中央揃え */
+    
+    border-right: 2px solid #0a0a0c;
+    background: linear-gradient(90deg, #16181a, #1d1f22);
 }
 .face-right {
-    width: 40px;
+    position: relative;
+    width: 45px;
     display: flex; flex-direction: column; align-items: center; justify-content: space-evenly;
-    border-left: 1px solid var(--border-color);
+    border-left: 2px solid #0a0a0c;
+    background: linear-gradient(-90deg, #16181a, #1d1f22);
 }
 
-/* --- 1U 中央部の3行レイアウト --- */
-/* 上側の隙間を削る */
-.r1-container { display: flex; justify-content: space-between; align-items: flex-start; line-height: 1.1; margin-top: -2px; }
-.r1-left { display: flex; flex-direction: column; min-width: 0; }
-.r1-id { font-size: clamp(10px, 3.5cqi, 16px); font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.r1-loc { font-size: clamp(8px, 2.5cqi, 12px); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.r1-desc { font-size: clamp(11px, 4cqi, 18px); color: var(--accent-green); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+/* ネジ穴の装飾 */
+.face-left::before, .face-left::after, .face-right::before, .face-right::after {
+    content: ""; position: absolute; width: 6px; height: 6px; background: #050505;
+    border-radius: 50%; box-shadow: inset 1px 1px 3px #000, 0.5px 0.5px 1px #444;
+}
+.face-left::before { top: 8px; left: 4px; }
+.face-left::after { bottom: 8px; left: 4px; }
+.face-right::before { top: 8px; right: 4px; }
+.face-right::after { bottom: 8px; right: 4px; }
 
-.r2-container { display: flex; align-items: center; gap: 5px; }
-
-.r3-container { font-size: clamp(8px, 2.5cqi, 12px); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-/* --- 電源スイッチ (縦型・スリム化) --- */
-.power-switch-v { position: relative; width: 14px; height: 28px; }
+/* --- 電源スイッチ --- */
+.power-switch-v { position: relative; width: 12px; height: 26px; margin: 0; display: block; }
 .power-switch-v input { opacity: 0; width: 0; height: 0; }
 .power-switch-v .slider {
     position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
-    background-color: #222; border: 1px solid #555; border-radius: 4px; transition: .3s;
+    background-color: #1a1a1a; border: 1px solid #444; border-radius: 4px; transition: .3s;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.8);
 }
 .power-switch-v .slider:before {
-    position: absolute; content: ""; width: 10px; height: 10px; left: 1px; bottom: 1px;
+    position: absolute; content: ""; width: 8px; height: 10px; left: 1px; bottom: 1px;
     background-color: #666; border-radius: 2px; transition: .3s;
 }
 .power-switch-v input:checked + .slider { border-color: var(--accent-green); box-shadow: 0 0 5px rgba(0,255,65,0.4); }
-.power-switch-v input:checked + .slider:before { background-color: var(--accent-green); transform: translateY(-14px); }
+.power-switch-v input:checked + .slider:before { background-color: var(--accent-green); transform: translateY(-13px); }
 
-.apply-btn-mini { font-size: 9px; padding: 2px; width: 34px; text-align: center; }
+/* --- APPLYボタン（LEDバッジ風デザイン） --- */
+.apply-btn-mini { 
+    font-family: inherit;
+    font-size: 9px;
+    font-weight: bold;
+    line-height: 1; /* 文字の上下の偏りを補正 */
+    
+    background: transparent;
+    color: var(--accent-orange);
+    border: 1px solid var(--accent-orange);
+    border-radius: 3px;
+    
+    padding: 4px 6px;
+    margin-top: 10px; /* 電源スイッチとの隙間 */
+    cursor: pointer;
+    transition: 0.2s;
+}
+.apply-btn-mini:hover { background: rgba(255, 136, 0, 0.15); box-shadow: 0 0 8px rgba(255, 136, 0, 0.4); }
 
-/* アイコンボタン群 */
-.icon-btn { background: none; border: 1px solid transparent; color: var(--text-dim); font-size: 14px; cursor: pointer; padding: 2px; line-height: 1; border-radius:2px;}
+/* =========================================================
+   【4. 中央ディスプレイ部】
+========================================================= */
+.face-center {
+    flex: 1; 
+    padding: 10px 12px 6px 12px; /* 内部要素が溢れないための余白設定 */
+    display: flex; flex-direction: column; justify-content: space-between;
+    min-width: 0;
+}
+
+/* 
+  フォントの自動拡縮(clamp)
+  最小フォントpx, 基準となる拡縮率(cqi), 最大フォントpx
+*/
+.r1-container { display: flex; justify-content: space-between; align-items: flex-start; line-height: 1.1; margin-top: 0; }
+.r1-left { display: flex; flex-direction: column; min-width: 0; }
+
+.r1-id { font-size: clamp(12px, 3cqi, 18px); font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r1-loc { font-size: clamp(10px, 2cqi, 14px); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+.r1-desc { font-size: clamp(12px, 3.5cqi, 20px); color: var(--accent-green); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+
+.r2-container { display: flex; align-items: center; gap: 6px; }
+.r3-container { font-size: clamp(9px, 2.2cqi, 13px); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px; }
+
+/* 中央ディスプレイ内のステータスLED共通クラス */
+.btn-vst { background: transparent; border: 1px solid #555; color: #888; cursor: pointer; border-radius: 3px; transition: 0.2s; padding: 4px 8px; }
+.btn-vst:hover { background: #333; }
+.btn-vst.dirty { color: var(--accent-yellow); border-color: var(--accent-yellow); font-weight: bold; background: rgba(255, 170, 0, 0.1); }
+.icon-btn { background: none; border: 1px solid transparent; color: var(--text-dim); font-size: 16px; cursor: pointer; padding: 2px; line-height: 1; border-radius:2px; transition: 0.2s;}
 .icon-btn:hover { border-color: #555; color: #fff; }
-.icon-btn.active { color: var(--accent-yellow); }
+.icon-btn.active { color: var(--accent-yellow); background: rgba(255,170,0,0.1); border-color: var(--accent-yellow); }
 
-/* --- 展開部 (4U化・右側見切れ防止) --- */
-.unit-body { display: none; width: 100%; flex-wrap: wrap; /* 🌟ここが画面幅に応じて段落ちさせる魔法 */ }
-.expanded .unit-body { display: flex; }
+/* =========================================================
+   【5. 下部展開エリア (設定・LCD)】
+========================================================= */
+.unit-body { display: none; width: 100%; }
+.expanded .unit-body { display: flex; align-items: stretch; height: 220px; }
+.expanded.auto-height .unit-body { height: auto; min-height: 220px; }
 
 .ui-lcd {
-    flex: 1.5 1 250px; /* 最小幅250pxを下回ると下に落ちる */
-    background: #000; color: var(--accent-green); font-size: 12px; padding: 10px;
-    height: 160px; overflow-y: auto; border-right: 1px solid var(--border-color);
+    flex: 1.5 1 250px;
+    background: #000; color: var(--accent-green); 
+    font-size: clamp(11px, 2.5cqi, 14px);
+    padding: 10px; overflow-y: auto; 
+    border-right: 1px solid var(--border-color);
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
 }
 .settings-area {
-    flex: 1 1 250px;
-    padding: 10px; display: flex; flex-direction: column; justify-content: space-between;
+    flex: 1 1 250px; padding: 12px; 
+    display: flex; flex-direction: column; justify-content: flex-start; gap: 10px;
+    overflow-y: auto; background: #18191b;
 }
 
-/* --- コンパクト設定パネル (数値入力＋グリッド) --- */
-.setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 12px; }
+.setting-row { display: flex; justify-content: space-between; align-items: center; font-size: clamp(10px, 2.2cqi, 13px); }
 .num-input {
-    background: #111; color: var(--accent-orange); border: 1px solid #444; border-radius: 3px;
+    background: #0c0c0c; color: var(--accent-orange); border: 1px solid #444; border-radius: 3px;
     padding: 3px 5px; width: 50px; text-align: right; font-family: monospace;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);
 }
 .checkbox-grid {
     display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px;
-    background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; border: 1px solid #333; margin: 10px 0;
+    background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; border: 1px solid #222; margin: 5px 0;
 }
-.chk-label { display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; white-space: nowrap; }
-.select-dark { background: #111; color: var(--accent-orange); border: 1px solid #444; padding: 3px; font-size: 11px; }
-
-.btn-vst { background: transparent; border: 1px solid #555; color: #888; cursor: pointer; border-radius: 3px; transition: 0.2s; }
-.btn-vst.dirty { color: var(--accent-yellow); border-color: var(--accent-yellow); font-weight: bold; background: rgba(255, 170, 0, 0.1); }
+.chk-label { display: flex; align-items: center; gap: 4px; font-size: clamp(9px, 2cqi, 12px); cursor: pointer; white-space: nowrap; }
+.select-dark { background: #0c0c0c; color: var(--accent-orange); border: 1px solid #444; padding: 3px; font-size: 11px; }
