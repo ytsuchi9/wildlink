@@ -1,6 +1,6 @@
 <?php
 // web/camviewer-test2.php
-// WILDLINK RACK-CONSOLE (WES 2026) - V17.7 (4K Ready & Hardware Texture)
+// WILDLINK RACK-CONSOLE (WES 2026) - V17.8 (4K Ready & Hardware Texture UI)
 $sys_id = isset($_GET['sys_id']) ? htmlspecialchars($_GET['sys_id'], ENT_QUOTES, 'UTF-8') : 'node_001';
 ?>
 <!DOCTYPE html>
@@ -8,13 +8,15 @@ $sys_id = isset($_GET['sys_id']) ? htmlspecialchars($_GET['sys_id'], ENT_QUOTES,
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WILDLINK 2026 | Rack Console</title>
+    <title>WILDLINK 2026 | Rack Console UI Test</title>
     <link rel="stylesheet" href="css/vst-rack-test2.css">
 </head>
 <body>
     <header class="rack-header">
-        <div class="rack-title">WILDLINK RACK-CONSOLE <span class="version">Ver 2026.1</span></div>
-        <div class="rack-stats">CPU: 42.5°C &nbsp;&nbsp; RSSI: -65 dBm &nbsp;&nbsp; UP: 12:34:56</div>
+        <div class="rack-title">WILDLINK RACK-CONSOLE <span class="version">Ver 2026.1 UI</span></div>
+        <div class="rack-stats" style="color: var(--accent-green); font-size: 14px; padding: 10px;">
+            CPU: 42.5°C &nbsp;&nbsp; RSSI: -65 dBm &nbsp;&nbsp; UP: 12:34:56
+        </div>
     </header>
 
     <main class="rack-container" id="rack-main">
@@ -24,6 +26,7 @@ $sys_id = isset($_GET['sys_id']) ? htmlspecialchars($_GET['sys_id'], ENT_QUOTES,
         <div id="content-sns_move_4" class="vst-plugin-container"></div>
     </main>
 
+    <!-- ベースクラスが存在する前提 -->
     <script src="js/vst-unit-base.js"></script>
     <script src="js/plugins/vst-unit-test2.js"></script>
 
@@ -48,7 +51,7 @@ $sys_id = isset($_GET['sys_id']) ? htmlspecialchars($_GET['sys_id'], ENT_QUOTES,
                         val_interval: 15,
                         val_alert_sync: 1,
                         val_alert_int: 15,
-                        act_rec: 1,
+                        act_rec: 0, // 初期は消灯
                         act_db: 1,
                         act_line: 1,
                         act_rec_mode: 0
@@ -57,14 +60,16 @@ $sys_id = isset($_GET['sys_id']) ? htmlspecialchars($_GET['sys_id'], ENT_QUOTES,
 
                 const unit = new VstUnitTest2(mockConfig, mockManager);
                 
+                // モジュール2番のみ、3秒後にアラートを発報するテスト
                 if (num === 2) {
                     setTimeout(() => {
                         unit.updateFaceVisual({
                             val_status: 'ALERT',
                             log_msg: "MOTION DETECTED!", 
                             log_code: 302,
-                            val_params: mockConfig.val_params
+                            val_params: { ...mockConfig.val_params, act_rec: 1 } // RECをONにして点滅させる
                         });
+                        // 1U部分全体の赤い枠線点滅（旧仕様の復活）
                         unit.triggerAlert('RED', 'MOTION DETECTED');
                     }, 3000);
                 }

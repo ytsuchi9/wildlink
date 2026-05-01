@@ -1,16 +1,16 @@
 {
-  "timestamp": 1777290111.1688466,
+  "timestamp": 1777661264.8306024,
   "configs": [
     {
       "vst_type": "sns_motion",
       "val_params": {
-        "val_interval": 11,
-        "act_db": 1,
-        "act_line": 1,
-        "act_rec": 1,
-        "act_rec_mode": 0,
-        "val_alert_sync": 1,
-        "val_alert_int": 9
+        "val_interval": 12,
+        "act_db": 0,
+        "act_line": 0,
+        "act_rec": 0,
+        "act_rec_mode": 1,
+        "val_alert_sync": 0,
+        "val_alert_int": 10
       },
       "is_active": 1,
       "vst_role_name": "sns_move",
