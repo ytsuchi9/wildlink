@@ -1,5 +1,6 @@
 /**
  * WES 2026: VstUnitBase (Rack System v17 Core)
+ * ※UIの基本骨格と、サーバーとの通信（Apply/Sync）を担う基底クラス
  */
 class VstUnitBase {
     constructor(conf, manager) {
@@ -41,7 +42,8 @@ class VstUnitBase {
                             <input type="checkbox" class="ui-sw vst-input" data-key="val_enabled" ${this.val_enabled ? 'checked' : ''}>
                             <span class="slider"></span>
                         </label>
-                        <button class="btn-vst apply-btn-mini ui-sync" title="Sync / Ping">SYNC</button>
+                        <!-- 【課題3: 左側のボタンを APPLY に変更し、変更検知(Dirty)と連動させる】 -->
+                        <button class="btn-vst apply-btn-mini ui-apply" title="Apply Changes">APPLY</button>
                     </div>
                     
                     <div class="face-center" id="face-center-${this.roleName}">
@@ -49,6 +51,7 @@ class VstUnitBase {
                         
                         <div class="r3-container" style="display:flex; justify-content:space-between; border-top:1px dashed #333; padding-top:4px; margin-top:auto;">
                             <div style="display:flex; gap:8px;">
+                                <!-- ユーザー指定: JST(日本時間)での表示を徹底 -->
                                 <span id="base-time-${this.roleName}" style="font-family:'Share Tech Mono';">--:--:--</span>
                                 <span id="base-status-${this.roleName}" style="font-weight:bold;">IDLE</span>
                                 <span id="base-code-${this.roleName}" style="color:var(--accent-orange);">[---]</span>
@@ -57,20 +60,21 @@ class VstUnitBase {
                         </div>
                     </div>
 
-                    <div class="face-right" style="display: flex; flex-direction: column; gap: 8px; justify-content: flex-start; padding-top: 10px;">
+                    <div class="face-right">
                         <button class="btn-vst ui-exp" title="設定展開">▼</button>
                         <button class="btn-vst ui-keep" title="固定">＄</button>
-                        <button class="btn-vst ui-scroll-mode" title="スクロール切替">⇅</button>
+                        <button class="btn-vst ui-scroll-mode" title="スクロール・段階的拡張切替">⇅</button>
                         <button class="btn-vst ui-ping" title="死活確認">↻</button>
                     </div>
                 </div>
                 <div class="unit-body">
                     <div class="test-lcd ui-lcd" id="lcd-${this.roleName}">
-                        <span style="color:#555;">[${new Date().toLocaleTimeString('ja-JP')}]</span> SYSTEM READY.
+                        <span style="color:#555;">[${new Date().toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' })}]</span> SYSTEM READY.
                     </div>
                     <div class="settings-area" id="settings-${this.roleName}">
                         ${this.renderSettings()}
-                        <div style="display:flex;gap:0.5cqi;margin-top:auto;">
+                        <!-- 【課題2: 設定項目とボタンの重なり防止】 CSSの settings-bottom-controls で最下部に押しやる -->
+                        <div class="settings-bottom-controls">
                             <button class="btn-vst action-btn ui-reset">RESET</button>
                             <button class="btn-vst action-btn ui-apply">APPLY</button>
                         </div>
@@ -79,42 +83,28 @@ class VstUnitBase {
             </div>
         `;
 
-        // initUIメソッド内の uiオブジェクト定義部分を更新
+        // UI要素のマッピング
         this.ui = {
             box: document.getElementById(`vst-box-${this.roleName}`),
             sw: container.querySelector('.ui-sw'),
+            // 左側のミニボタンと、アコーディオン内のメインボタンの両方を一括取得
+            // applies: container.querySelectorAll('.ui-apply'), 
             sync: container.querySelector('.ui-sync'),
             applies: container.querySelectorAll('.ui-apply, .power-apply-btn'), // 両方の適用ボタン
             reset: container.querySelector('.ui-reset'),
             exp: container.querySelector('.ui-exp'),
             keep: container.querySelector('.ui-keep'),
-            scroll: container.querySelector('.ui-scroll-mode'), // 🌟追加
-            ping: container.querySelector('.ui-ping'),     // 🌟追加
+            scroll: container.querySelector('.ui-scroll-mode'),
+            ping: container.querySelector('.ui-ping'),
             lcd: document.getElementById(`lcd-${this.roleName}`)
         };
 
-        // 🌟【修正】HTMLからのイベント呼び出し(onchange等)ができるように、DOMにインスタンスを紐付ける
+        // HTML内の onchange 属性等からアクセスできるようにする
         this.ui.box.vstInstance = this;
 
         this.bindEvents();
         setTimeout(() => this.syncOriginalConfigFromDOM(), 300);
         this.updateBaseVisual(this.conf);
-
-        // 🚨【重要修正】DBを圧迫する元凶。MQTTで状態は取れるので、1分ごとのDBコマンド発行を停止します！
-        // this.startPolling();
-
-        // vst-unit-base.js のイベントバインド周辺
-        this.ui.applies = container.querySelectorAll('.ui-apply, .power-apply-btn'); // 両方のクラスを取得
-
-        // 状態変更があったときの処理内で
-        this.ui.applies.forEach(btn => btn.classList.add('dirty'));
-
-        // APPLYが押された後のリセット処理内で
-        this.ui.applies.forEach(btn => {
-            btn.classList.remove('dirty');
-            btn.classList.add('success');
-        });
-
     }
 
     renderFaceCenter() { return ``; }
@@ -124,27 +114,19 @@ class VstUnitBase {
         this.ui.exp.onclick = () => this.toggleAccordion();
         this.ui.keep.onclick = () => this.toggleKeep();
 
-        // 🌟 スクロールモード切替
         if (this.ui.scroll) {
             this.ui.scroll.onclick = () => {
-                const isScroll = this.ui.lcd.classList.toggle('scroll-active');
-                this.ui.scroll.classList.toggle('active', isScroll);
-                if (isScroll) {
-                    this.ui.lcd.style.overflowY = 'auto';
-                    this.ui.lcd.scrollTop = this.ui.lcd.scrollHeight;
-                } else {
-                    this.ui.lcd.style.overflowY = 'hidden';
-                }
+                // 【課題1: スクロール可否ボタンの対象変更】
+                // LCD画面単体ではなく、親要素(box)に 'auto-height' クラスを付与し、CSS側で高さを拡張させる
+                const isAutoHeight = this.ui.box.classList.toggle('auto-height');
+                this.ui.scroll.classList.toggle('active', isAutoHeight);
             };
         }
 
-        // 🌟 死活監視（Ping）
-        if (this.ui.ping) {
-            this.ui.ping.onclick = () => this.requestSync(false);
-        }
-
+        if (this.ui.ping) this.ui.ping.onclick = () => this.requestSync(false);
         this.ui.reset.onclick = () => this.resetSettings();
-        this.ui.sync.onclick = () => this.requestSync();
+        
+        // 【課題3: APPLYボタン複数対応】querySelectorAllで取得した全てのAPPLYボタンにイベントを紐付け
         this.ui.applies.forEach(btn => btn.onclick = () => this.applySettings());
 
         const inputs = document.querySelectorAll(`#vst-box-${this.roleName} .vst-input`);
@@ -155,9 +137,10 @@ class VstUnitBase {
     }
 
     updateBaseVisual(data) {
+        // 日本時間 (JST) での時刻表示
         if (data.updated_at || data.env_last_detect) {
             const d = new Date(data.updated_at || data.env_last_detect);
-            this.updateDOMText(`base-time-${this.roleName}`, d.toLocaleTimeString('ja-JP', { hour12: false }));
+            this.updateDOMText(`base-time-${this.roleName}`, d.toLocaleTimeString('ja-JP', { hour12: false, timeZone: 'Asia/Tokyo' }));
         }
 
         if (data.val_status) {
@@ -165,7 +148,7 @@ class VstUnitBase {
             if (statEl) {
                 const status = data.val_status.toUpperCase();
                 statEl.innerText = status;
-                statEl.style.color = (status === 'ALERT' || status === 'DETECT') ? 'var(--accent-red)' : 'var(--accent-green)';
+                statEl.style.color = (status === 'ALERT' || status === 'DETECT' || status === 'ERROR') ? 'var(--accent-red)' : 'var(--accent-green)';
             }
         }
         if (data.log_code) this.updateDOMText(`base-code-${this.roleName}`, `[${data.log_code}]`);
@@ -174,7 +157,7 @@ class VstUnitBase {
 
     updateLCD(msg, logExt = null, isRed = false) {
         if (!this.ui.lcd) return;
-        const t = new Date().toLocaleTimeString('ja-JP', { hour12: false });
+        const t = new Date().toLocaleTimeString('ja-JP', { hour12: false, timeZone: 'Asia/Tokyo' });
         const color = isRed ? 'var(--accent-red)' : 'var(--accent-green)';
         let html = `<br><span style="color:#555;">[${t}]</span> <span style="color:${color};">${msg}</span>`;
         
@@ -212,7 +195,13 @@ class VstUnitBase {
     async applySettings() {
         if (!this.isDirty) return;
         this.triggerAlert('YELLOW', 'APPLYING...');
-        this.ui.applies.forEach(btn => { btn.classList.remove('dirty'); btn.classList.add('success'); btn.disabled = true; });
+        
+        // 全てのAPPLYボタンを無効化し、成功状態の色に変更
+        this.ui.applies.forEach(btn => { 
+            btn.classList.remove('dirty'); 
+            btn.classList.add('success'); 
+            btn.disabled = true; 
+        });
 
         try {
             const formData = new URLSearchParams();
@@ -223,10 +212,20 @@ class VstUnitBase {
                 const key = input.getAttribute('data-key');
                 if (key) payload[key] = input.type === 'checkbox' ? (input.checked ? 1 : 0) : parseFloat(input.value);
             });
+            // DB設計コンセプトに基づく、差分パッチ(cmd_json)の発行
             formData.append('cmd_json', JSON.stringify(payload));
             await fetch('api/send_cmd.php', { method: 'POST', body: formData });
-        } catch (e) {} finally {
-            this.ui.applies.forEach(btn => { btn.classList.remove('success'); btn.disabled = false; });
+            
+            // 適用成功時に現在の状態を正とする
+            this.syncOriginalConfigFromDOM();
+            
+        } catch (e) {
+            this.updateLCD("Apply FAILED.", null, true);
+        } finally {
+            this.ui.applies.forEach(btn => { 
+                btn.classList.remove('success'); 
+                btn.disabled = false; 
+            });
         }
     }
 
@@ -247,7 +246,9 @@ class VstUnitBase {
             const current = input.type === 'checkbox' ? (input.checked ? "1" : "0") : String(input.value).trim();
             if (current !== this.originalConfig[key]) this.isDirty = true;
         });
+        
         if (this.isDirty) {
+            // 変更があれば全てのAPPLYボタンを黄色く光らせる（dirtyクラス）
             this.ui.applies.forEach(btn => btn.classList.add('dirty'));
             this.ui.reset.classList.add('active');
         } else {
@@ -274,11 +275,13 @@ class VstUnitBase {
         this.ui.exp.innerText = this.isExpanded ? '▲' : '⛶';
         this.ui.exp.classList.toggle('active', this.isExpanded);
     }
+    
     toggleKeep() {
         this.isKeep = !this.isKeep;
         this.ui.keep.classList.toggle('active', this.isKeep);
         if (this.isKeep && !this.isExpanded) this.toggleAccordion();
     }
+    
     updateDOMText(id, text) { const el = document.getElementById(id); if (el) el.innerText = text; }
     
     triggerAlert(level, msg) {

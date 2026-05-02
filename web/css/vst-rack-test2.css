@@ -1,5 +1,6 @@
 @charset "UTF-8";
 /* web/css/vst-rack-test2.css (WES 2026 Layout Foundation & UI Modules) */
+/* 5月1日 vst_motion UI調整4 に一旦もどして調整 */
 
 :root {
     --bg-base: #050505;
@@ -292,30 +293,10 @@ body {
    WES 2026: 必須レイアウト・状態変化用CSS追加
 ========================================= */
 
-/* ① グリッドレイアウトとコンテナサイズ計算の復旧　修正して冒頭に移動
-.rack-container {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
-    gap: 15px;
-    padding: 15px;
-    width: 100%;
-    box-sizing: border-box;
-} */
-
 .vst-plugin {
     container-type: inline-size;
     container-name: vstPlugin;
     width: 100%;
-}
-
-/* ② 右側ボタン群が潰れないように保護 */
-.face-right {
-    flex-shrink: 0;
-    min-width: 60px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
 }
 
 /* ③ ボタンの基本スタイルと、変更時(Dirty)の黄色変化 */
