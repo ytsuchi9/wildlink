@@ -8,6 +8,7 @@ if (typeof window.MotionUnit === 'undefined') {
     window.MotionUnit = class MotionUnit extends VstUnitBase {
         constructor(conf, manager) {
             super(conf, manager);
+            this.actionTimers = { db: null, line: null };
         }
 
         renderFaceCenter() {
@@ -17,7 +18,7 @@ if (typeof window.MotionUnit === 'undefined') {
 
             // 【課題5: r1-container が対象。CSSでアラートアニメーションがかかります】
             return `
-                <div class="r1-container">
+                <div class="r1-container" id="r1-${this.roleName}">
                     <div class="r1-left">
                         <div class="r1-id">${this.sysId} / ${valName}</div>
                         <div class="r1-loc">${locName}</div>

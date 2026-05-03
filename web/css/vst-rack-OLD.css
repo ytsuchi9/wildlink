@@ -1,0 +1,94 @@
+/**
+ * VST Rack System: Master Styling (v17 - Mobile Fit & High Visibility)
+ * 4/26 修正
+ */
+
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
+:root {
+    --rack-bg: #121212;
+    --unit-bg: #1a1a1a;
+    --accent-green: #00ff41;
+    --accent-red: #ff3333;
+    --accent-orange: #ff9100;
+    --accent-yellow: #ffcc00;
+    --panel-border: #444;
+}
+
+.rack-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 500px), 1fr));
+    gap: 15px; padding: 15px; background: var(--rack-bg);
+}
+
+.vst-unit-box {
+    container-type: inline-size; background: var(--unit-bg);
+    border: 1px solid var(--panel-border); border-radius: 4px;
+    overflow: hidden; aspect-ratio: 9.5 / 1.75;
+    transition: aspect-ratio 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.vst-unit-box.expanded { aspect-ratio: 9.5 / 5.5; }
+
+/* --- 1U Face --- */
+/* 🌟 width: 100%; と box-sizing: border-box; を追加して親枠をカッチリ固定 (4/26 修正)*/
+.vst-unit-face { display: flex; align-items: center; height: 100%; width: 100%; background: linear-gradient(180deg, #2a2a2a, #151515); box-sizing: border-box; }
+.vst-unit-box.expanded .vst-unit-face { height: 31.8%; border-bottom: 1px solid #000; }
+
+/* 左右スリムブロック */
+.face-left { display: flex; flex-direction: column; justify-content: center; align-items: center; width: 7cqi; height: 100%; gap: 0.4cqi; flex-shrink: 0; }
+/* 🌟 overflow: hidden; と box-sizing: border-box; を追加 (4/26 修正)*/
+.face-center { flex: 1; display: flex; flex-direction: column; justify-content: space-evenly; height: 100%; padding: 0 1.5cqi; border-left: 1px solid #333; min-width: 0; overflow: hidden; box-sizing: border-box; }
+.face-right { width: 5.5cqi; height: 100%; display: flex; flex-direction: column; border-left: 1px solid #333; flex-shrink: 0; }
+
+/* 🌟 APPLYボタン（ミニ）のスマホ対応修正 */
+.apply-btn-mini { 
+    font-size: 1.6cqi; 
+    padding: 0.1cqi 0; 
+    width: 85%;      /* 親(face-left)の幅に対して85%に制限 */
+    max-width: 6cqi; /* 突き抜け防止の最大幅 */
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+/* ボタン共通設定 */
+.btn-vst { 
+    border: 1px solid #333; border-radius: 3px; font-weight: bold; 
+    cursor: default; transition: 0.2s; background: #252525; color: #555; 
+    text-align: center; box-sizing: border-box; /* パディングによる肥大化を防止 */
+}
+.btn-vst.active { color: #ccc; cursor: pointer; border-color: #555; background: #333; }
+.btn-vst.dirty { color: var(--accent-orange); border-color: var(--accent-orange); cursor: pointer; }
+.btn-vst.success { background: var(--accent-green) !important; color: #000 !important; border-color: #fff; }
+
+/* アコーディオン内のボタン（現状維持） */
+.action-btn { font-size: 2.4cqi; padding: 0.8cqi; flex: 1; }
+
+/* 固定ボタン (Keep) */
+.icon-btn.active { 
+    background: #444 !important; 
+    color: var(--accent-yellow) !important; 
+    text-shadow: 0 0 10px rgba(255, 204, 0, 0.6);
+    box-shadow: inset 0 0 5px #000;
+}
+
+/* タイトルエリア & アラート点滅 */
+.unit-header-bar { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #333; transition: all 0.3s; }
+@keyframes blink-header-red { 50% { background: var(--accent-red); color: white; } }
+@keyframes blink-header-yellow { 50% { background: var(--accent-yellow); color: black; } }
+.alert-header-red .unit-header-bar { animation: blink-header-red 0.8s infinite; border-bottom-color: #fff; }
+.alert-header-yellow .unit-header-bar { animation: blink-header-yellow 1.2s infinite; border-bottom-color: #000; }
+
+/* その他コンポーネント */
+.power-switch-v { position: relative; width: 2.8cqi; height: 5.2cqi; background: #111; border-radius: 0.5cqi; border: 1.5px solid #555; cursor: pointer; }
+.power-switch-v input { opacity: 0; width: 0; height: 0; }
+.power-switch-v .slider { position: absolute; bottom: 0.3cqi; left: 0.3cqi; width: 2.1cqi; height: 2.2cqi; background: #444; border-radius: 0.3cqi; transition: 0.3s; }
+.power-switch-v input:checked + .slider { bottom: 2.6cqi; background: var(--accent-green); box-shadow: 0 0 1cqi var(--accent-green); }
+.vst-meter-mini { width: 15cqi; height: 1cqi; background: #000; border: 1px solid #444; overflow: hidden; }
+.vst-meter-fill { height: 100%; background: var(--accent-green); width: 0%; transition: width 0.3s; }
+.vst-disp-mini { font-family: monospace; color: var(--accent-green); background: #000; padding: 0.1cqi 0.5cqi; border: 1px solid #333; font-size: 2cqi; min-width: 6cqi; text-align: right; }
+.unit-body { display: none; height: 68.2%; padding: 1.5cqi; gap: 1.5cqi; box-sizing: border-box; }
+.expanded .unit-body { display: flex; }
+.test-lcd { flex: 6.5; background: #050505; color: var(--accent-green); font-family: monospace; padding: 1cqi; overflow-y: auto; font-size: 2.8cqi; border: 1px solid #222; }
+.settings-area { flex: 3.5; display: flex; flex-direction: column; gap: 1cqi; }

@@ -19,6 +19,7 @@ class VstUnitBase {
         this.isExpanded = false;
         this.isKeep = false;
         this.isDirty = false;
+        this.expandMode = 'scroll'; // 'scroll' or 'step'
         this.ui = {};
         this.pollTimer = null;
     }
@@ -72,7 +73,9 @@ class VstUnitBase {
                         <span style="color:#555;">[${new Date().toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' })}]</span> SYSTEM READY.
                     </div>
                     <div class="settings-area" id="settings-${this.roleName}">
-                        ${this.renderSettings()}
+                        <div class="settings-content">
+                            ${this.renderSettings()}
+                        </div>
                         <!-- 【課題2: 設定項目とボタンの重なり防止】 CSSの settings-bottom-controls で最下部に押しやる -->
                         <div class="settings-bottom-controls">
                             <button class="btn-vst action-btn ui-reset">RESET</button>
@@ -114,14 +117,22 @@ class VstUnitBase {
         this.ui.exp.onclick = () => this.toggleAccordion();
         this.ui.keep.onclick = () => this.toggleKeep();
 
-        if (this.ui.scroll) {
-            this.ui.scroll.onclick = () => {
-                // 【課題1: スクロール可否ボタンの対象変更】
-                // LCD画面単体ではなく、親要素(box)に 'auto-height' クラスを付与し、CSS側で高さを拡張させる
-                const isAutoHeight = this.ui.box.classList.toggle('auto-height');
-                this.ui.scroll.classList.toggle('active', isAutoHeight);
-            };
-        }
+        // スクロールモード切替ロジック（段階的拡張か、2U内スクロールか）
+        this.ui.scroll.onclick = () => {
+            if (this.expandMode === 'scroll') {
+                this.expandMode = 'step';
+                this.ui.box.classList.remove('mode-scroll');
+                this.ui.box.classList.add('mode-expand');
+                this.ui.scroll.classList.add('active');
+                this.updateLCD("Expand Mode: Stepwise (No Scroll)");
+            } else {
+                this.expandMode = 'scroll';
+                this.ui.box.classList.remove('mode-expand');
+                this.ui.box.classList.add('mode-scroll');
+                this.ui.scroll.classList.remove('active');
+                this.updateLCD("Expand Mode: Fixed 3U (Scroll)");
+            }
+        };
 
         if (this.ui.ping) this.ui.ping.onclick = () => this.requestSync(false);
         this.ui.reset.onclick = () => this.resetSettings();
@@ -136,6 +147,7 @@ class VstUnitBase {
         });
     }
 
+    // 基底クラスでのJST時刻表示とステータス表示
     updateBaseVisual(data) {
         // 日本時間 (JST) での時刻表示
         if (data.updated_at || data.env_last_detect) {
@@ -155,24 +167,23 @@ class VstUnitBase {
         if (data.log_msg) this.updateDOMText(`base-msg-${this.roleName}`, data.log_msg);
     }
 
+    // LCDへのログ出力（常に最新へスクロール）
     updateLCD(msg, logExt = null, isRed = false) {
         if (!this.ui.lcd) return;
         const t = new Date().toLocaleTimeString('ja-JP', { hour12: false, timeZone: 'Asia/Tokyo' });
         const color = isRed ? 'var(--accent-red)' : 'var(--accent-green)';
         let html = `<br><span style="color:#555;">[${t}]</span> <span style="color:${color};">${msg}</span>`;
-        
         if (logExt && typeof logExt === 'object') {
-            html += `<div style="margin-left: 15px; font-size: 0.85rem; color: #aaa; border-left: 1px dashed #444; padding-left: 8px; margin-top: 2px;">`;
+            html += `<div class="lcd-ext">`;
             for (const [key, val] of Object.entries(logExt)) {
-                const displayVal = typeof val === 'object' ? JSON.stringify(val) : val;
-                html += `<div><span style="color:var(--accent-orange);">${key}:</span> ${displayVal}</div>`;
+                html += `<div><span style="color:var(--accent-orange);">${key}:</span> ${val}</div>`;
             }
             html += `</div>`;
         }
         this.ui.lcd.innerHTML += html;
         this.ui.lcd.scrollTop = this.ui.lcd.scrollHeight;
     }
-
+    
     startPolling() {
         if (this.pollTimer) clearInterval(this.pollTimer);
         this.pollTimer = setInterval(() => { this.requestSync(true); }, this.conf.poll_interval);

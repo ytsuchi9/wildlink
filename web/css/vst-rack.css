@@ -1,94 +1,425 @@
-/**
- * VST Rack System: Master Styling (v17 - Mobile Fit & High Visibility)
- * 4/26 修正
- */
+@charset "UTF-8";
+/* web/css/vst-rack-test2.css (WES 2026 Layout Foundation & UI Modules) */
+/* 5月1日 vst_motion UI調整4 に一旦もどして調整 */
 
-*, *::before, *::after {
+:root {
+    --bg-base: #050505;
+    --rack-bg: #141517;
+    --panel-bg: #1c1d20;
+    --text-main: #e0e0e0;
+    --text-dim: #777;
+    --accent-green: #00ff41;
+    --accent-red: #ff3333;
+    --accent-yellow: #ffaa00;
+    --accent-orange: #ff8800;
+    --border-color: #333;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+    background-color: var(--bg-base);
+    color: var(--text-main);
+    font-family: 'Consolas', 'Courier New', 'Hiragino Kaku Gothic ProN', monospace;
+    margin: 0; padding: 0;
+}
+
+/* =========================================================
+   【1. 全体レイアウト：WES 2026 グリッド・ラックマウント式】
+   ※Flexboxの旧設定を廃止し、完璧な自動整列を行うGridに完全統合
+========================================================= */
+.rack-container {
+    display: grid;
+    /* 🌟 ここが最重要: auto-fill を auto-fit に変更！
+       これにより、パネルが1枚の時は画面いっぱいに広がり、
+       2枚以上入る幅になった時だけ綺麗に分割されます */
+    grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+    gap: 15px;
+    padding: 20px; /* 余白を少しゆったりめに統一 */
+    width: 100%;
     box-sizing: border-box;
 }
 
-:root {
-    --rack-bg: #121212;
-    --unit-bg: #1a1a1a;
-    --accent-green: #00ff41;
-    --accent-red: #ff3333;
-    --accent-orange: #ff9100;
-    --accent-yellow: #ffcc00;
-    --panel-border: #444;
+/* 孤児パネル救済ダミー（下の段だけ巨大化するのを防ぐ） */
+.rack-container::before,
+.rack-container::after {
+    content: "";
+    order: 999;
+    height: 0;
+    margin: 0;
+    padding: 0;
+    pointer-events: none;
 }
 
-.rack-container {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 500px), 1fr));
-    gap: 15px; padding: 15px; background: var(--rack-bg);
+/* パネルとダミーの共通ベース設定 */
+.vst-plugin,
+.rack-container::before,
+.rack-container::after {
+    container-type: inline-size;
+    container-name: panel;
+    flex-grow: 1;
+    flex-shrink: 1;
+    max-width: 912px;
+    min-width: 460px; /* 絶対に死守する最小幅 */
 }
 
+@media (max-width: 500px) {
+    .rack-container { padding: 0 8px 15px 8px; }
+    /* スマホ用：画面幅に合わせて縮小を許可 */
+    .vst-plugin, .rack-container::before, .rack-container::after { min-width: 0; }
+}
+
+/* =========================================================
+   【列数の厳格コントロール】
+   「まだ太くなれるのに勝手に列を増やす」ブラウザの挙動を封じます。
+========================================================= */
+
+/* 幅974pxまで：強制1列 */
+@media (max-width: 974px) {
+    .vst-plugin, .rack-container::before, .rack-container::after {
+        flex-basis: 100%;
+    }
+}
+
+/* 幅975px ～ 1879px：強制2列 
+   （※1450pxの時もここに含まれるため、絶対に3列にならず2列のまま912pxに向かって成長します） */
+@media (min-width: 975px) and (max-width: 1879px) {
+    .vst-plugin, .rack-container::before, .rack-container::after {
+        flex-basis: calc(50% - 15px);
+    }
+}
+
+/* 幅1880px ～ 2794px：強制3列 
+   （※2列が最大幅の912pxに到達する1880pxになって初めて、3列目を許可します） */
+@media (min-width: 1880px) and (max-width: 2794px) {
+    .vst-plugin, .rack-container::before, .rack-container::after {
+        flex-basis: calc(33.333% - 15px);
+    }
+}
+
+/* 幅2795px ～ ：強制4列 */
+@media (min-width: 2795px) {
+    .vst-plugin, .rack-container::before, .rack-container::after {
+        flex-basis: calc(25% - 15px);
+    }
+}
+
+/* =========================================================
+   【2. ハードウェア筐体のデザイン】
+========================================================= */
 .vst-unit-box {
-    container-type: inline-size; background: var(--unit-bg);
-    border: 1px solid var(--panel-border); border-radius: 4px;
-    overflow: hidden; aspect-ratio: 9.5 / 1.75;
-    transition: aspect-ratio 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.vst-unit-box.expanded { aspect-ratio: 9.5 / 5.5; }
-
-/* --- 1U Face --- */
-/* 🌟 width: 100%; と box-sizing: border-box; を追加して親枠をカッチリ固定 (4/26 修正)*/
-.vst-unit-face { display: flex; align-items: center; height: 100%; width: 100%; background: linear-gradient(180deg, #2a2a2a, #151515); box-sizing: border-box; }
-.vst-unit-box.expanded .vst-unit-face { height: 31.8%; border-bottom: 1px solid #000; }
-
-/* 左右スリムブロック */
-.face-left { display: flex; flex-direction: column; justify-content: center; align-items: center; width: 7cqi; height: 100%; gap: 0.4cqi; flex-shrink: 0; }
-/* 🌟 overflow: hidden; と box-sizing: border-box; を追加 (4/26 修正)*/
-.face-center { flex: 1; display: flex; flex-direction: column; justify-content: space-evenly; height: 100%; padding: 0 1.5cqi; border-left: 1px solid #333; min-width: 0; overflow: hidden; box-sizing: border-box; }
-.face-right { width: 5.5cqi; height: 100%; display: flex; flex-direction: column; border-left: 1px solid #333; flex-shrink: 0; }
-
-/* 🌟 APPLYボタン（ミニ）のスマホ対応修正 */
-.apply-btn-mini { 
-    font-size: 1.6cqi; 
-    padding: 0.1cqi 0; 
-    width: 85%;      /* 親(face-left)の幅に対して85%に制限 */
-    max-width: 6cqi; /* 突き抜け防止の最大幅 */
+    background: var(--rack-bg);
+    border: 1px solid #111;
+    border-top: 1px solid #4a4a4a;
+    border-bottom: 2px solid #000;
+    box-shadow: 0 6px 12px rgba(0,0,0,0.6);
+    border-radius: 2px;
     overflow: hidden;
-    white-space: nowrap;
+    transition: 0.3s;
 }
 
-/* ボタン共通設定 */
-.btn-vst { 
-    border: 1px solid #333; border-radius: 3px; font-weight: bold; 
-    cursor: default; transition: 0.2s; background: #252525; color: #555; 
-    text-align: center; box-sizing: border-box; /* パディングによる肥大化を防止 */
-}
-.btn-vst.active { color: #ccc; cursor: pointer; border-color: #555; background: #333; }
-.btn-vst.dirty { color: var(--accent-orange); border-color: var(--accent-orange); cursor: pointer; }
-.btn-vst.success { background: var(--accent-green) !important; color: #000 !important; border-color: #fff; }
-
-/* アコーディオン内のボタン（現状維持） */
-.action-btn { font-size: 2.4cqi; padding: 0.8cqi; flex: 1; }
-
-/* 固定ボタン (Keep) */
-.icon-btn.active { 
-    background: #444 !important; 
-    color: var(--accent-yellow) !important; 
-    text-shadow: 0 0 10px rgba(255, 204, 0, 0.6);
-    box-shadow: inset 0 0 5px #000;
+.vst-unit-face {
+    display: flex;
+    width: 100%;
+    aspect-ratio: 9.5 / 1.75; 
+    min-height: 55px;
+    background: linear-gradient(180deg, #222428 0%, #111 100%);
+    border-bottom: 1px solid transparent;
+    transition: background 0.3s, color 0.3s;
+    position: relative;
 }
 
-/* タイトルエリア & アラート点滅 */
-.unit-header-bar { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #333; transition: all 0.3s; }
-@keyframes blink-header-red { 50% { background: var(--accent-red); color: white; } }
-@keyframes blink-header-yellow { 50% { background: var(--accent-yellow); color: black; } }
-.alert-header-red .unit-header-bar { animation: blink-header-red 0.8s infinite; border-bottom-color: #fff; }
-.alert-header-yellow .unit-header-bar { animation: blink-header-yellow 1.2s infinite; border-bottom-color: #000; }
+.vst-unit-box.expanded .vst-unit-face { border-bottom-color: var(--border-color); }
 
-/* その他コンポーネント */
-.power-switch-v { position: relative; width: 2.8cqi; height: 5.2cqi; background: #111; border-radius: 0.5cqi; border: 1.5px solid #555; cursor: pointer; }
+/* 展開時：デフォルトは3U（Face 1U + Body 2U） */
+.vst-unit-box.expanded .unit-body {
+    height: 240px; /* 2U分 */
+}
+
+/* スクロール禁止モード（段階的拡張）時の挙動 */
+.vst-unit-box.expanded.mode-expand .unit-body {
+    height: auto; /* コンテンツに合わせて4U, 5Uと伸びる */
+    min-height: 120px;
+}
+
+/* スクロール許可モード時の挙動（LCDと設定エリアの比率） */
+.vst-unit-box.expanded.mode-scroll .unit-body {
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+/* =========================================================
+   【3. 左右のラックマウント耳とスイッチ類】
+========================================================= */
+.face-left {
+    position: relative;
+    width: 42px; /* APPLYボタンのスリム化に伴い50pxから縮小 */
+    display: flex; flex-direction: column; 
+    align-items: center; justify-content: center; 
+    border-right: 2px solid #0a0a0c;
+    background: linear-gradient(90deg, #16181a, #1d1f22);
+}
+
+/* 右側パネルのレイアウト修正 */
+.face-right {
+    flex-shrink: 0;
+    min-width: 60px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px !important; /* 間隔を詰め、収まりやすくする */
+    justify-content: center;
+    align-items: center;
+    padding: 4px 2px;
+}
+
+.face-left::before, .face-left::after, .face-right::before, .face-right::after {
+    content: ""; position: absolute; width: 6px; height: 6px; background: #050505;
+    border-radius: 50%; box-shadow: inset 1px 1px 3px #000, 0.5px 0.5px 1px #444;
+}
+.face-left::before { top: 8px; left: 4px; }
+.face-left::after { bottom: 8px; left: 4px; }
+.face-right::before { top: 8px; right: 4px; }
+.face-right::after { bottom: 8px; right: 4px; }
+
+/* 電源スイッチ */
+.power-switch-v { position: relative; width: 12px; height: 26px; margin: 0; display: block; }
 .power-switch-v input { opacity: 0; width: 0; height: 0; }
-.power-switch-v .slider { position: absolute; bottom: 0.3cqi; left: 0.3cqi; width: 2.1cqi; height: 2.2cqi; background: #444; border-radius: 0.3cqi; transition: 0.3s; }
-.power-switch-v input:checked + .slider { bottom: 2.6cqi; background: var(--accent-green); box-shadow: 0 0 1cqi var(--accent-green); }
-.vst-meter-mini { width: 15cqi; height: 1cqi; background: #000; border: 1px solid #444; overflow: hidden; }
-.vst-meter-fill { height: 100%; background: var(--accent-green); width: 0%; transition: width 0.3s; }
-.vst-disp-mini { font-family: monospace; color: var(--accent-green); background: #000; padding: 0.1cqi 0.5cqi; border: 1px solid #333; font-size: 2cqi; min-width: 6cqi; text-align: right; }
-.unit-body { display: none; height: 68.2%; padding: 1.5cqi; gap: 1.5cqi; box-sizing: border-box; }
-.expanded .unit-body { display: flex; }
-.test-lcd { flex: 6.5; background: #050505; color: var(--accent-green); font-family: monospace; padding: 1cqi; overflow-y: auto; font-size: 2.8cqi; border: 1px solid #222; }
-.settings-area { flex: 3.5; display: flex; flex-direction: column; gap: 1cqi; }
+.power-switch-v .slider {
+    position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+    background-color: #1a1a1a; border: 1px solid #444; border-radius: 4px; transition: .3s;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.8);
+}
+.power-switch-v .slider:before {
+    position: absolute; content: ""; width: 8px; height: 10px; left: 1px; bottom: 1px;
+    background-color: #666; border-radius: 2px; transition: .3s;
+}
+.power-switch-v input:checked + .slider { border-color: var(--accent-green); box-shadow: 0 0 5px rgba(0,255,65,0.4); }
+.power-switch-v input:checked + .slider:before { background-color: var(--accent-green); transform: translateY(-13px); }
+
+/* APPLYボタン（スリム化調整済） */
+.apply-btn-mini { 
+    font-family: inherit; font-size: 9px; font-weight: bold; line-height: 1; 
+    background: transparent; color: var(--accent-orange); border: 1px solid var(--accent-orange); border-radius: 3px;
+    padding: 3px 2px; /* 左右マージンを減らしてスリムに */
+    margin-top: 10px; cursor: pointer; transition: 0.2s;
+}
+.apply-btn-mini:hover { background: rgba(255, 136, 0, 0.15); box-shadow: 0 0 8px rgba(255, 136, 0, 0.4); }
+
+/* =========================================================
+   【4. 中央ディスプレイ部 & 1行目アラート】
+========================================================= */
+.face-center {
+    flex: 1; 
+    padding: 10px 12px 6px 12px;
+    display: flex; flex-direction: column; justify-content: space-between;
+    gap: 4px; /* スマホ縦画面での行間の窮屈さを解消 */
+    min-width: 0;
+}
+
+.r1-container { display: flex; justify-content: space-between; align-items: flex-start; line-height: 1.1; margin-top: 0; transition: background-color 0.3s; }
+.r1-left { display: flex; flex-direction: column; min-width: 0; }
+
+/* 1行目文字サイズ微調整 (11px〜18px) */
+.r1-id { font-size: clamp(11px, 3cqi, 18px); font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r1-loc { font-size: clamp(10px, 2cqi, 14px); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+.r1-desc { font-size: clamp(12px, 3.5cqi, 20px); color: var(--accent-green); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+
+/* 1行目アラートアニメーション定義 */
+@keyframes rowAlertRed { 0% { background: rgba(255,0,0,0.5); color: #fff; } 50% { background: transparent; color: inherit; } 100% { background: rgba(255,0,0,0.5); color: #fff; } }
+@keyframes rowAlertYellow { 0% { background: rgba(255,170,0,0.5); color: #000; } 50% { background: transparent; color: inherit; } 100% { background: rgba(255,170,0,0.5); color: #000; } }
+@keyframes rowAlertGreen { 0% { background: rgba(0,255,65,0.4); color: #fff; } 50% { background: transparent; color: inherit; } 100% { background: rgba(0,255,65,0.4); color: #fff; } }
+
+.alert-row-red { animation: rowAlertRed 1s infinite; padding: 0 4px; border-radius: 2px; }
+.alert-row-yellow { animation: rowAlertYellow 1s infinite; padding: 0 4px; border-radius: 2px; }
+.alert-row-green { animation: rowAlertGreen 0.5s infinite; padding: 0 4px; border-radius: 2px; } /* ACK用高速点滅 */
+
+/* =========================================================
+   【5. UIパーツ群 (2行目モジュール) 】
+========================================================= */
+.r2-container { display: flex; align-items: flex-end; gap: 8px; }
+
+/* パーツ本体と下部ラベルをまとめる縦型コンテナ */
+.ui-part-group { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 2px; }
+.ui-part-label { font-size: 8px; color: #666; font-family: 'Consolas', monospace; letter-spacing: -0.5px; }
+
+/* --- LED & 押しボタン共通設定 (最大18px) --- */
+.ui-btn-led {
+    font-family: inherit; font-size: clamp(9px, 2.5cqi, 18px); font-weight: bold;
+    padding: 2px 6px; border-radius: 3px; border: 1px solid #333;
+    background: #111; color: #555; cursor: pointer; transition: 0.1s; line-height: 1;
+}
+/* 点灯バリエーション */
+.led-red { border-color: var(--accent-red); color: var(--accent-red); background: rgba(255,0,0,0.1); box-shadow: 0 0 8px rgba(255,0,0,0.5); }
+.led-yellow { border-color: var(--accent-yellow); color: var(--accent-yellow); background: rgba(255,170,0,0.1); box-shadow: 0 0 8px rgba(255,170,0,0.5); }
+.led-green { border-color: var(--accent-green); color: var(--accent-green); background: rgba(0,255,65,0.1); box-shadow: 0 0 8px rgba(0,255,65,0.5); }
+.led-white { border-color: #fff; color: #fff; background: rgba(255,255,255,0.1); box-shadow: 0 0 8px rgba(255,255,255,0.5); }
+.led-off { border-color: #333; color: #555; background: #111; box-shadow: none; }
+/* 点滅用共通クラス */
+@keyframes ledBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
+.led-blink { animation: ledBlink 0.8s steps(2, start) infinite; }
+
+/* --- 7セグメント風 デジタル数値表示 (最大18px) --- */
+.ui-7seg {
+    font-family: 'Courier New', monospace; font-size: clamp(10px, 2.8cqi, 18px); font-weight: bold;
+    color: var(--accent-green); background: #080a08; border: 1px inset #222; padding: 2px 4px; border-radius: 2px;
+    letter-spacing: 1px; line-height: 1;
+}
+
+/* --- レベルメーター --- */
+.ui-meter-box {
+    width: 40px; height: 8px; background: #111; border: 1px solid #333; border-radius: 1px;
+    padding: 1px; display: flex; align-items: stretch; margin-bottom: 2px;
+}
+.ui-meter-bar { width: 0%; background: linear-gradient(90deg, var(--accent-green) 50%, var(--accent-yellow) 80%, var(--accent-red) 100%); transition: width 0.2s ease-out; }
+
+/* =========================================================
+   【6. 3行目テキスト & 下部展開エリア (LCD・設定)】
+========================================================= */
+/* 3行目文字サイズ最大18pxへ拡張 */
+.r3-container { font-size: clamp(9px, 2.2cqi, 18px); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px; }
+
+.icon-btn { background: none; border: 1px solid transparent; color: var(--text-dim); font-size: 16px; cursor: pointer; padding: 2px; line-height: 1; border-radius:2px; transition: 0.2s;}
+.icon-btn:hover { border-color: #555; color: #fff; }
+.icon-btn.active { color: var(--accent-yellow); background: rgba(255,170,0,0.1); border-color: var(--accent-yellow); }
+
+/* .unit-body { display: none; width: 100%; */
+/* アコーディオン部（初期2U = 120px） */
+.unit-body {
+    height: 0;
+    overflow: hidden;
+    transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.expanded .unit-body { display: flex; align-items: stretch; height: 220px; }
+.expanded.auto-height .unit-body { height: auto; min-height: 220px; }
+
+.ui-lcd {
+    flex: 1.5 1 250px;
+    /* 真っ黒ではなく、わずかに緑がかった液晶の地色 */
+    background-color: #051005; 
+    color: var(--accent-green); 
+    font-size: clamp(11px, 2.5cqi, 14px);
+    padding: 10px; overflow-y: auto; 
+    border-right: 1px solid var(--border-color);
+    box-shadow: inset 0 0 15px rgba(0,0,0,0.9);
+    
+    /* 走査線（スキャンライン）の描画。2pxごとにうっすら暗い線を入れる */
+    background-image: repeating-linear-gradient(0deg, transparent, transparent 1px, rgba(0, 0, 0, 0.4) 1px, rgba(0, 0, 0, 0.4) 2px);
+}
+
+/* LCD部：オーバーフロー時は常にバーを表示 */
+.lcd-ext {
+    height: 45px;
+    background: #000;
+    overflow-y: scroll; /* 常に表示 */
+    padding: 4px 8px;
+    font-family: 'Share Tech Mono', monospace;
+}
+
+.settings-area { flex: 1 1 250px; padding: 12px; display: flex; flex-direction: column; justify-content: flex-start; gap: 10px; overflow-y: auto; background: #18191b; }
+.setting-row { display: flex; justify-content: space-between; align-items: center; font-size: clamp(10px, 2.2cqi, 13px); }
+.num-input { background: #0c0c0c; color: var(--accent-orange); border: 1px solid #444; border-radius: 3px; padding: 3px 5px; width: 50px; text-align: right; font-family: monospace; box-shadow: inset 0 1px 3px rgba(0,0,0,0.5); }
+.checkbox-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; border: 1px solid #222; margin: 5px 0; }
+.chk-label { display: flex; align-items: center; gap: 4px; font-size: clamp(9px, 2cqi, 12px); cursor: pointer; white-space: nowrap; }
+.select-dark { background: #0c0c0c; color: var(--accent-orange); border: 1px solid #444; padding: 3px; font-size: 11px; }
+.settings-bottom-controls {
+    margin-top: auto; /* 最下部に押しやる */
+    padding-top: 10px;
+    display: flex;
+    gap: 5px;
+    background: #1a1a1a; /* 背景をつけて透過防止 */
+    z-index: 10;
+}
+
+/* =========================================
+   WES 2026: 必須レイアウト・状態変化用CSS追加
+========================================= */
+
+.vst-plugin {
+    container-type: inline-size;
+    container-name: vstPlugin;
+    width: 100%;
+}
+
+/* ③ ボタンの基本スタイルと、変更時(Dirty)の黄色変化 */
+/* ボタンをより「ボタンらしく」かつコンパクトに */
+.btn-vst {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #222;
+    color: #888;
+    border: 1px solid #444;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+/* 🌟 有効（Active）時のカラー定義 */
+.btn-vst.active.ui-exp { color: var(--accent-yellow); border-color: var(--accent-yellow); box-shadow: 0 0 5px rgba(255, 193, 7, 0.5); }
+.btn-vst.active.ui-keep { color: var(--accent-yellow); border-color: var(--accent-yellow); background: rgba(255,193,7,0.1); }
+.btn-vst.active.ui-scroll-mode { color: #00d4ff; border-color: #00d4ff; background: rgba(0,212,255,0.1); }
+
+/* ↻ PINGボタンは押した瞬間だけ光る */
+.btn-vst:active { transform: scale(0.9); background: #444; }
+
+/* 🌟 コンテナ幅が狭い時のレスポンシブ（ボタンを2列にする） */
+@container vstPlugin (max-width: 500px) {
+    .face-right {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        width: 56px;
+        gap: 4px;
+    }
+}
+
+.action-btn {
+    background-color: #222;
+    color: #888;
+    transition: all 0.2s;
+}
+/* 変更があったら黄色く光らせる */
+.action-btn.dirty {
+    background-color: var(--accent-yellow);
+    color: #000;
+    border-color: #fff;
+    box-shadow: 0 0 10px rgba(255, 193, 7, 0.4);
+}
+/* 適用成功時は緑に */
+.action-btn.success {
+    background-color: var(--accent-green);
+    color: #000;
+}
+
+/* ④ アラート時の赤背景と黄色背景 */
+.alert-header-red .vst-unit-face {
+    background-color: rgba(255, 51, 51, 0.2) !important;
+    border-color: var(--accent-red) !important;
+}
+.alert-header-yellow .vst-unit-face {
+    background-color: rgba(255, 193, 7, 0.2) !important;
+    border-color: var(--accent-yellow) !important;
+}
+
+/* 1U部最下行が幅が狭いと隠れる問題への対処　vst-rack-test2.css に追記 */
+@container vstPlugin (max-width: 650px) {
+    .vst-unit-face {
+        padding: 5px; /* 狭い時は余白を減らす */
+    }
+    .status-text {
+        font-size: 0.85em; /* 文字を少し小さくして押し込む */
+    }
+}
+
+/* LED点滅アニメーション */
+@keyframes blinkRed { 0%, 100% { background-color: #222; } 50% { background-color: var(--accent-red); box-shadow: 0 0 10px red; } }
+@keyframes blinkGreen { 0%, 100% { background-color: #222; } 50% { background-color: var(--accent-green); box-shadow: 0 0 10px green; } }
+
+.led-valid { background-color: var(--accent-green); box-shadow: 0 0 5px green; }
+.led-blink-red { animation: blinkRed 0.5s infinite; }
+.led-blink-green-5 { animation: blinkGreen 0.2s 5; } /* 0.2秒間隔で5回点滅して止まる */
+.led-error-red { background-color: var(--accent-red) !important; box-shadow: 0 0 10px red; }
+.led-error-yellow { background-color: var(--accent-yellow) !important; box-shadow: 0 0 10px yellow; }
